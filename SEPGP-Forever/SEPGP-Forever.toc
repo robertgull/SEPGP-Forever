@@ -3,5 +3,15 @@
 ## Notes: EPGP loot distribution for WoW Forever
 ## Version: 0.1.0
 ## SavedVariables: SEPGP_DB
+libs\LibStub\LibStub.lua
+libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+libs\AceComm-3.0\ChatThrottleLib.lua
+libs\AceComm-3.0\AceComm-3.0.lua
+libs/AceSerializer-3.0/AceSerializer-3.0.lua
+libs/LibDeflate-1.0.2-release/LibDeflate.lua
+
 EPGP.lua
+GP.lua
+comms.lua
 UI.lua
+tooltip.lua

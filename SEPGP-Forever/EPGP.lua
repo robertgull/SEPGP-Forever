@@ -89,7 +89,43 @@ function SEPGP.GetPR(name)
 end
 
 
+function SEPGP.ValidateAction(action)
+    if type(action) ~= "table" then
+        return false
+    end
 
+    if type(action.id) ~= "string"
+        or action.id == "" then
+        return false
+    end
+
+    if action.type ~= "EP"
+        and action.type ~= "GP" then
+        return false
+    end
+
+    if type(action.player) ~= "string"
+        or action.player == "" then
+        return false
+    end
+
+    if type(action.amount) ~= "number" then
+        return false
+    end
+
+    if type(action.timestamp) ~= "number" then
+        return false
+    end
+
+    if type(action.actor) ~= "string" then
+        action.actor = "Unknown"
+    end
+
+    action.player =
+        SEPGP.NormalizeName(action.player)
+
+    return true
+end
 
 function SEPGP.CreateAction(actionType, playerName, amount, reason)
     local action = {
@@ -206,76 +242,6 @@ function SEPGP.GetSortedActions()
     return actions
 end
 
-function SEPGP.RequestStandings()
-    C_ChatInfo.SendAddonMessage(
-        SEPGP.PREFIX,
-        "STANDINGS_REQUEST",
-        "GUILD"
-    )
-
-    print("SEPGP: Standings requested.")
-end
-
-function SEPGP.SendStandings(target)
-    for name, player in pairs(SEPGP_DB.players) do
-        local message = table.concat({
-            "STANDING",
-            name,
-            tostring(player.EP),
-            tostring(player.GP),
-        }, "|")
-
-        C_ChatInfo.SendAddonMessage(
-            SEPGP.PREFIX,
-            message,
-            "WHISPER",
-            target
-        )
-    end
-
-    C_ChatInfo.SendAddonMessage(
-        SEPGP.PREFIX,
-        "STANDINGS_DONE",
-        "WHISPER",
-        target
-    )
-end
-
-function SEPGP.RequestSync()
-    if not C_GuildInfo.IsGuildOfficer() then
-        print("SEPGP: Full sync is only available to officers.")
-        return
-    end
-
-    -- Ask the other officers to contribute their actions.
-    local result = C_ChatInfo.SendAddonMessage(
-        SEPGP.PREFIX,
-        "SYNC_REQUEST",
-        "OFFICER"
-    )
-
-    if result ~= 0 then
-        print(
-            "SEPGP: Could not request sync. Result:",
-            tostring(result)
-        )
-        return
-    end
-
-    -- Contribute everything we know as well.
-    local actions = SEPGP.GetSortedActions()
-
-    for _, action in ipairs(actions) do
-        SEPGP.QueueAction(action)
-    end
-
-    print(
-        string.format(
-            "SEPGP: Sync started, contributing %d actions.",
-            #actions
-        )
-    )
-end
 
 function SEPGP.PrintHistory()
     local actions = SEPGP.GetSortedActions()
@@ -355,306 +321,8 @@ function SEPGP.PrintStandings()
     print("=== " .. #standings .. " players ===")
 end
 
--- =========================================================
--- Communication
--- =========================================================
-SEPGP.sendQueue = SEPGP.sendQueue or {}
-SEPGP.isSending = false
-
-function SEPGP.QueueAction(action)
-    table.insert(SEPGP.sendQueue, action)
-    SEPGP.ProcessSendQueue()
-end
-
-function SEPGP.ProcessSendQueue()
-    if SEPGP.isSending then
-        return
-    end
-
-    if #SEPGP.sendQueue == 0 then
-        return
-    end
-
-    SEPGP.isSending = true
-
-    -- Peek. Do NOT remove it yet.
-    local action = SEPGP.sendQueue[1]
-
-    local result = SEPGP.BroadcastAction(action)
-
-    local delay
-
-    if result == 0 then
-        -- Successfully accepted for sending.
-        table.remove(SEPGP.sendQueue, 1)
-
-        -- Try the next one quickly while we still have allowance.
-        delay = 0.1
-
-    elseif result == 3 or result == 8 then
-        -- 3 = AddonMessageThrottle
-        -- 8 = ChannelThrottle
-        --
-        -- Leave the action at position 1 and retry later.
-        delay = 1.1
-
-    else
-        print(
-            "SEPGP: Failed sending action",
-            tostring(action.id),
-            "result:",
-            tostring(result)
-        )
-
-        -- Permanent/unknown failure: discard so we don't lock the queue.
-        table.remove(SEPGP.sendQueue, 1)
-
-        delay = 0.5
-    end
-
-    C_Timer.After(delay, function()
-        SEPGP.isSending = false
-        SEPGP.ProcessSendQueue()
-    end)
-end
 
 
-function SEPGP.SendAction(action, channel, target)
-    local beforeEP = action.before and action.before.EP or ""
-    local beforeGP = action.before and action.before.GP or ""
-    local afterEP = action.after and action.after.EP or ""
-    local afterGP = action.after and action.after.GP or ""
-
-    local message = table.concat({
-        "ACTION",
-        action.id,
-        action.type,
-        action.player,
-        tostring(action.amount),
-        action.actor,
-        tostring(action.timestamp),
-        tostring(beforeEP),
-        tostring(beforeGP),
-        tostring(afterEP),
-        tostring(afterGP),
-    }, "|")
-
-    return C_ChatInfo.SendAddonMessage(
-        SEPGP.PREFIX,
-        message,
-        channel,
-        target
-    )
-end
-
-function SEPGP.ParseAction(message)
-    local command, id, actionType, playerName,
-          amount, actor, timestamp,
-          beforeEP, beforeGP,
-          afterEP, afterGP =
-        strsplit("|", message)
-
-
-    if command ~= "ACTION" then
-        return nil
-    end
-
-    local action = {
-        id = id,
-        type = actionType,
-        player = SEPGP.NormalizeName(playerName),
-        amount = tonumber(amount),
-        actor = actor,
-        timestamp = tonumber(timestamp),
-    }
-
-    if beforeEP ~= "" and beforeGP ~= "" then
-        action.before = {
-            EP = tonumber(beforeEP),
-            GP = tonumber(beforeGP),
-        }
-    end
-
-    if afterEP ~= "" and afterGP ~= "" then
-        action.after = {
-            EP = tonumber(afterEP),
-            GP = tonumber(afterGP),
-        }
-    end
-
-    if not id
-        or not actionType
-        or not playerName
-        or not amount
-        or not timestamp then
-        return nil
-    end
-
-    if actionType ~= "EP" and actionType ~= "GP" then
-        return nil
-    end
-
-    return action
-end
-
-function SEPGP.BroadcastAction(action)
-    return SEPGP.SendAction(action, "OFFICER")
-end
-
-function SEPGP.InitializeComms()
-    local result = C_ChatInfo.RegisterAddonMessagePrefix(SEPGP.PREFIX)
-
-    print("SEPGP comm prefix registered:", tostring(result))
-end
-
-
--- =========================================================
--- Receive actions
--- =========================================================
-local eventFrame = CreateFrame("Frame")
-
-eventFrame:RegisterEvent("ADDON_LOADED")
-eventFrame:RegisterEvent("CHAT_MSG_ADDON")
-
-eventFrame:SetScript("OnEvent", function(self, event, ...)
-    if event == "ADDON_LOADED" then
-        local addonName = ...
-
-        if addonName == "SEPGP-Forever" then
-            SEPGP.InitializeComms()
-        end
-
-    elseif event == "CHAT_MSG_ADDON" then
-        SEPGP.HandleAddonMessage(...)
-    end
-end)
-
-function SEPGP.HandleAddonMessage(prefix, message, channel, sender)
-local debugMessage = message:gsub("|", "||")
-
-    print(
-        "CHAT_MSG_ADDON:",
-        tostring(prefix),
-        debugMessage,
-        tostring(channel),
-        tostring(sender)
-    )
-    if prefix ~= SEPGP.PREFIX then
-        return
-    end
-
-    local command = strsplit("|", message)
-
-    if command == "STANDINGS_REQUEST" then
-        local isOfficer = C_GuildInfo.IsGuildOfficer()
-
-        print(
-            "STANDINGS_REQUEST from:",
-            tostring(sender),
-            "channel:",
-            tostring(channel),
-            "officer:",
-            tostring(isOfficer)
-        )
-
-        if not isOfficer then
-            return
-        end
-
-        print("SEPGP: Sending standings to", sender)
-        SEPGP.SendStandings(sender)
-        return
-    end
-
-    if command == "STANDINGS_DONE" then
-        print("SEPGP: Standings updated.")
-
-        if SEPGP.UI
-            and SEPGP.UI.standingsFrame
-            and SEPGP.UI.standingsFrame:IsShown() then
-            SEPGP.RefreshStandingsWindow()
-        end
-
-        return
-    end
-
-    if command == "STANDING" then
-        local _, playerName, ep, gp =
-            strsplit("|", message)
-
-        playerName = SEPGP.NormalizeName(playerName)
-
-        SEPGP_DB.players[playerName] = {
-            EP = tonumber(ep),
-            GP = tonumber(gp),
-        }
-
-        return
-    end
-
-    if command == "SYNC_REQUEST" then
-        local isOfficer = C_GuildInfo.IsGuildOfficer()
-
-        print(
-            "SYNC_REQUEST from:",
-            tostring(sender),
-            "channel:",
-            tostring(channel),
-            "officer:",
-            tostring(isOfficer)
-        )
-        if channel ~= "OFFICER" then
-            return
-        end
-
-        if not isOfficer then
-            return
-        end
-
-        local me = GetUnitName("player", true)
-
-        -- We already broadcast our actions when we initiated the sync.
-        if SEPGP.NormalizeName(sender) == SEPGP.NormalizeName(me) then
-            return
-        end
-
-        local actions = SEPGP.GetSortedActions()
-
-        for _, action in ipairs(actions) do
-            SEPGP.QueueAction(action)
-        end
-
-        return
-    end
-    if command == "ACTION" then
-        if channel ~= "OFFICER" then
-            return
-        end
-
-        if not C_GuildInfo.IsGuildOfficer() then
-            return
-        end
-        local action = SEPGP.ParseAction(message)
-
-        if not action then
-            return
-        end
-
-        if SEPGP.ApplyAction(action) then
-            print(
-                string.format(
-                    "SEPGP sync: %s %+d %s from %s",
-                    action.player,
-                    action.amount,
-                    action.type,
-                    sender
-                )
-            )
-        end
-
-        return
-    end
-end
 -- =========================================================
 -- Slash commands
 -- =========================================================
