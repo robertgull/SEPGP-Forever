@@ -14,4 +14,6 @@ EPGP.lua
 GP.lua
 comms.lua
 UI.lua
+raidep.lua
 tooltip.lua
+dfb.lua

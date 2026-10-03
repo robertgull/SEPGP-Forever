@@ -38,7 +38,7 @@ local SLOT_MODIFIERS = {
 
 
 function SEPGP.GP.GetSlotModifier(equipLoc)
-    return SLOT_MODIFIERS[equipLoc]
+    return SLOT_MODIFIERS[equipLoc] or 0.50
 end
 
 
@@ -90,22 +90,14 @@ function SEPGP.GP.GetItemGP(itemLink)
         return nil, "Item information not available"
     end
 
-    -- GP is only defined for Common -> Legendary.
+    -- GP is defined for Poor (gray) -> Legendary.
     if not itemQuality
-        or itemQuality < 1
+        or itemQuality < 0
         or itemQuality > 5 then
         return nil, "Unsupported item quality"
     end
 
     local slotModifier = SEPGP.GP.GetSlotModifier(itemEquipLoc)
-
-    if not slotModifier then
-        return nil, string.format(
-            "Unsupported equipment slot: %s / subclassID: %s",
-            tostring(itemEquipLoc),
-            tostring(subclassID)
-        )
-    end
 
     local itemLevel =
         C_Item.GetDetailedItemLevelInfo(itemLink)

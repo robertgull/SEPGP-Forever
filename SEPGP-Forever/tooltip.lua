@@ -59,6 +59,11 @@ end
 -- =========================================================
 
 local function AddGPToTooltip(tooltip, data)
+    local recipient = SEPGP.DFB and SEPGP.DFB.GetAwardRecipient(data and data.guid)
+    if recipient then
+        tooltip:AddLine("SEPGP: Awarded to " .. recipient, 0.2, 1.0, 0.2)
+        tooltip:Show()
+    end
     local itemLink =
         GetTooltipItemLink(tooltip, data)
 
