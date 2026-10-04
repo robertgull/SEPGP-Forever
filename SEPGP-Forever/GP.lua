@@ -5,6 +5,47 @@
 SEPGP = SEPGP or {}
 SEPGP.GP = SEPGP.GP or {}
 
+local FORMULA_DEFAULTS = { Base = 8, Multiplier = 2, Mod = 1 }
+
+function SEPGP.GP.IsValidFormulaValue(key, value)
+    return FORMULA_DEFAULTS[key] ~= nil
+        and type(value) == "number"
+        and value == value and value < math.huge
+        and (value > 0 or (value == 0 and key ~= "Multiplier"))
+end
+
+function SEPGP.GP.GetFormulaSettings()
+    SEPGP_DB = SEPGP_DB or {}
+    if type(SEPGP_DB.settings) ~= "table" then SEPGP_DB.settings = {} end
+    if type(SEPGP_DB.settings.gp) ~= "table" then SEPGP_DB.settings.gp = {} end
+    local settings = SEPGP_DB.settings.gp
+    for key, default in pairs(FORMULA_DEFAULTS) do
+        if not SEPGP.GP.IsValidFormulaValue(key, settings[key]) then
+            settings[key] = default
+        end
+    end
+    return settings
+end
+
+function SEPGP.GP.SetFormulaSettings(base, multiplier, mod)
+    if not SEPGP.CanEditOfficerSettings() then
+        return false, "Only guild officers can change the GP formula."
+    end
+    if not SEPGP.GP.IsValidFormulaValue("Base", base)
+        or not SEPGP.GP.IsValidFormulaValue("Multiplier", multiplier)
+        or not SEPGP.GP.IsValidFormulaValue("Mod", mod) then
+        return false, "Base and mod must be finite numbers >= 0; multiplier must be > 0."
+    end
+    local settings = SEPGP.GP.GetFormulaSettings()
+    settings.Base, settings.Multiplier, settings.Mod = base, multiplier, mod
+    return true
+end
+
+function SEPGP.GP.ResetFormulaSettings()
+    return SEPGP.GP.SetFormulaSettings(
+        FORMULA_DEFAULTS.Base, FORMULA_DEFAULTS.Multiplier, FORMULA_DEFAULTS.Mod)
+end
+
 local SLOT_MODIFIERS = {
     INVTYPE_HEAD = 1.00,
     INVTYPE_NECK = 0.50,
@@ -56,13 +97,17 @@ function SEPGP.GP.Calculate(itemLevel, rarity, slotModifier)
         return nil, "Invalid slot modifier"
     end
 
-    local gp =
-        8
-        * (2 ^ ((itemLevel / 26) + rarity - 4))
-        * slotModifier
+    local settings = SEPGP.GP.GetFormulaSettings()
+    local gp = settings.Base
+        * (settings.Multiplier ^ ((itemLevel / 26) + (rarity - 4)))
+        * slotModifier * settings.Mod
+
+    if gp ~= gp or gp == math.huge or gp == -math.huge then
+        return nil, "GP formula result is not finite"
+    end
 
     -- Store/display GP as an integer.
-    return math.floor(gp + 0.5)
+    return math.floor(gp)
 end
 
 

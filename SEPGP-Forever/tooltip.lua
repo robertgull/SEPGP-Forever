@@ -64,6 +64,7 @@ local function AddGPToTooltip(tooltip, data)
         tooltip:AddLine("SEPGP: Awarded to " .. recipient, 0.2, 1.0, 0.2)
         tooltip:Show()
     end
+    if not SEPGP.GetPersonalSettings().gpTooltip then return end
     local itemLink =
         GetTooltipItemLink(tooltip, data)
 

@@ -5,13 +5,6 @@ local PREFIX = "SEPGPF_DFB"
 local AceComm = LibStub("AceComm-3.0")
 AceComm:Embed(DFB)
 
-DFB.choices = {
-    { label = "BiS", percent = 100 },
-    { label = "Alternative", percent = 80 },
-    { label = "Upgrade", percent = 50 },
-    { label = "Off Spec", percent = 0 },
-    { label = "Pass", percent = 0 },
-}
 DFB.seen = {}
 
 local function NameKey(name)
@@ -49,17 +42,95 @@ function DFB.PruneBagAwards()
     local awards = DFB.GetBagAwards()
     for guid in pairs(awards) do
         local location = C_Item.GetItemLocation(guid)
-        if not location or C_Item.GetItemGUID(location) ~= guid then
+        if not (DFB.trade and DFB.trade.reserved[guid])
+            and (not location or C_Item.GetItemGUID(location) ~= guid) then
             awards[guid] = nil
         end
     end
 end
 
+-- Fill ordinary trade slots with the exact awarded instances, never the enchant slot.
+function DFB.FillAwardedTrade()
+    local trade = DFB.trade
+    if not trade or trade.busy or not GetCursorInfo or GetCursorInfo()
+        or not GetTradePlayerItemLink or not ClickTradeButton
+        or not C_Item or not C_Item.GetItemLocation then return end
+    if TradeFrame and not TradeFrame:IsShown() then return end
+    local partner = NameKey(GetUnitName("NPC", true))
+    if not partner then return end
+    trade.partner = trade.partner or partner
+    if trade.partner ~= partner then return end
+    local pickup = C_Container and C_Container.PickupContainerItem or PickupContainerItem
+    if not pickup then return end
+    local candidates = {}
+    for guid, award in pairs(DFB.GetBagAwards()) do
+        if NameKey(award.winner) == partner and not trade.attempted[guid] then
+            candidates[#candidates + 1] = guid
+        end
+    end
+    table.sort(candidates)
+    trade.busy = true
+    for _, guid in ipairs(candidates) do
+        -- Never displace an existing cursor item or an item already offered for trade.
+        if DFB.trade ~= trade or NameKey(GetUnitName("NPC", true)) ~= partner or GetCursorInfo() then break end
+        local tradeSlot
+        for slot = 1, (TRADE_ENCHANT_SLOT or 7) - 1 do
+            if not trade.slots[slot] and not GetTradePlayerItemLink(slot) then tradeSlot = slot; break end
+        end
+        if not tradeSlot then break end
+        local location = C_Item.GetItemLocation(guid)
+        if location and location.IsBagAndSlot and location:IsBagAndSlot() then
+            local bag, slot = location:GetBagAndSlot()
+            local locked
+            if C_Container and C_Container.GetContainerItemInfo then
+                local info = C_Container.GetContainerItemInfo(bag, slot)
+                locked = info and info.isLocked
+            elseif GetContainerItemInfo then
+                local _, _, isLocked = GetContainerItemInfo(bag, slot)
+                locked = isLocked
+            end
+            if not locked and DFB.GetBagItemGUID(bag, slot) == guid then
+                trade.attempted[guid], trade.reserved[guid] = true, true
+                trade.slots[tradeSlot] = guid
+                pickup(bag, slot)
+                if GetCursorInfo() == "item" then
+                    ClickTradeButton(tradeSlot)
+                    -- Failed placement leaves our item on the cursor; return it to its bag.
+                    if GetCursorInfo() == "item" then
+                        if ClearCursor then ClearCursor() end
+                        trade.slots[tradeSlot], trade.reserved[guid] = nil, nil
+                    end
+                elseif not GetTradePlayerItemLink(tradeSlot) then
+                    trade.slots[tradeSlot], trade.reserved[guid] = nil, nil
+                end
+            end
+        end
+    end
+    trade.busy = false
+end
+
+function DFB.BeginAwardedTrade()
+    local trade = { attempted = {}, reserved = {}, slots = {} }
+    DFB.trade = trade
+    -- Let the game's trade window and NPC unit initialize first.
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function() if DFB.trade == trade then DFB.FillAwardedTrade() end end)
+    else DFB.FillAwardedTrade() end
+end
+
 function DFB.GetRoster()
     local roster = {}
+    local classes = {}
     local function add(unit)
         local name = GetUnitName(unit, true)
-        if name then roster[NameKey(name)] = name end
+        if name then
+            local key = NameKey(name)
+            roster[key] = name
+            if UnitClass then
+                local _, class = UnitClass(unit)
+                classes[key] = class
+            end
+        end
     end
     if IsInRaid() then
         for i = 1, GetNumGroupMembers() do add("raid" .. i) end
@@ -67,7 +138,17 @@ function DFB.GetRoster()
         add("player")
         for i = 1, GetNumSubgroupMembers() do add("party" .. i) end
     end
-    return roster
+    return roster, classes
+end
+
+local function BidderName(name, classes)
+    local class = classes[NameKey(name)]
+    local color = class and ((CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[class])
+        or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]))
+    if not color then return name end
+    return string.format("|cff%02x%02x%02x%s|r",
+        math.floor(color.r * 255 + 0.5), math.floor(color.g * 255 + 0.5),
+        math.floor(color.b * 255 + 0.5), name)
 end
 
 function DFB.GetMaster()
@@ -121,7 +202,7 @@ function DFB.GetRankedBids()
     if not round then return bids end
     local roster = DFB.GetRoster()
     for key, choice in pairs(round.responses) do
-        if choice < 5 and roster[key] then
+        if choice < 5 and round.choices[choice].active and roster[key] then
             local name = round.eligible[key]
             bids[#bids + 1] = {
                 name = name, player = StandingName(name), choice = choice,
@@ -137,8 +218,8 @@ function DFB.GetRankedBids()
     return bids
 end
 
-local function Cost(gp, choice)
-    return math.floor(gp * DFB.choices[choice].percent / 100 + 0.5)
+local function Cost(round, choice)
+    return math.floor(round.gp * round.choices[choice].percent / 100 + 0.5)
 end
 
 local function Label(frame, text, x, y, width)
@@ -172,7 +253,7 @@ local function Window(name, title, width, height)
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
-    Label(frame, title, 20, -18, width - 60)
+    frame.title = Label(frame, title, 20, -18, width - 60)
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -4, -4)
     close:SetScript("OnClick", function() frame:Hide() end)
@@ -185,30 +266,16 @@ function DFB.Refresh()
     if not frame then return end
     local round = DFB.round
     if not round then
-        frame.itemDetails:Hide()
-        frame:SetHeight(470)
-        frame.item:SetText("Shift-click an item in your bags or the loot window to start bidding.")
-        frame.status:SetText("Award assigns corpse loot automatically. Trade bag items after awarding.")
+        frame.item:SetText(frame.compactLayout and "Shift-click a bag or loot item to start."
+            or "Shift-click an item in your bags or the loot window to start bidding.")
+        frame.status:SetText(frame.compactLayout and "Corpse loot is assigned. Trade bag items."
+            or "Award assigns corpse loot automatically. Trade bag items after awarding.")
         frame.bids:SetText("")
         frame.award:Disable()
         frame.cancel:Disable()
         return
     end
     frame.item:SetText(round.link .. "\nBase GP: " .. round.gp)
-    -- Use the game's complete item tooltip rather than reconstructing stats,
-    -- bonuses, sockets and item type from partial item-info APIs.
-    local details = frame.itemDetails
-    details:SetOwner(frame, "ANCHOR_NONE")
-    details:ClearLines()
-    if round.bagGUID and details.SetItemByGUID then
-        details:SetItemByGUID(round.bagGUID)
-    else
-        details:SetHyperlink(round.link)
-    end
-    details:ClearAllPoints()
-    details:SetPoint("TOPLEFT", frame, "TOPLEFT", 590, -55)
-    details:Show()
-    frame:SetHeight(math.max(470, (details:GetHeight() or 0) + 85))
     if round.pendingAward then
         frame.status:SetText("Assigning loot to " .. round.pendingAward.name .. "...")
         frame.award:Disable()
@@ -218,18 +285,25 @@ function DFB.Refresh()
     local count, total = 0, 0
     for _ in pairs(round.eligible) do total = total + 1 end
     for _ in pairs(round.responses) do count = count + 1 end
-    frame.status:SetText(string.format("Responses: %d/%d. Highest category wins, then EP/GP.\nEqual ratios use alphabetical name order. Close bidding with Award.", count, total))
+    frame.status:SetText(string.format(frame.compactLayout
+        and "Responses: %d/%d\nPriority: category, then EP/GP."
+        or "Responses: %d/%d. Priority: category, then EP/GP.\nEqual ratios use name order. Award closes bidding.", count, total))
     local lines = {}
+    local _, classes = DFB.GetRoster()
     local ranked = DFB.GetRankedBids()
     for i, bid in ipairs(ranked) do
-        lines[#lines + 1] = string.format("%d. %s - %s | PR %.3f | %d GP", i,
-            bid.name, DFB.choices[bid.choice].label, bid.pr, Cost(round.gp, bid.choice))
+        lines[#lines + 1] = string.format("%d. %s\n   %s | PR %.3f | %d GP", i,
+            BidderName(bid.name, classes), round.choices[bid.choice].label, bid.pr, Cost(round, bid.choice))
     end
     for key, choice in pairs(round.responses) do
-        if choice == 5 then lines[#lines + 1] = round.eligible[key] .. " - Pass" end
+        if choice == 5 then
+            lines[#lines + 1] = BidderName(round.eligible[key], classes) .. " - " .. round.choices[5].label
+        end
     end
     frame.bids:SetText(table.concat(lines, "\n"))
-    frame.bids:SetHeight(math.max(260, #lines * 18))
+    local height = math.max(140, frame.bids:GetStringHeight() or #lines * 32)
+    frame.bids:SetHeight(height)
+    frame.bidContent:SetHeight(height)
     if #ranked > 0 then frame.award:Enable() else frame.award:Disable() end
     frame.cancel:Enable()
 end
@@ -250,8 +324,8 @@ end
 function DFB.CompleteAward(round, winner)
     if DFB.round ~= round then return end
     round.pendingAward = nil
-    local amount = Cost(round.gp, winner.choice)
-    local reason = "DFB: " .. round.link .. " (" .. DFB.choices[winner.choice].label .. ")"
+    local amount = Cost(round, winner.choice)
+    local reason = "DFB: " .. round.link .. " (" .. round.choices[winner.choice].label .. ")"
     -- AddGP clamps GP to BASE_GP; a free award must preserve decayed GP too.
     if amount > 0 and not SEPGP.AddGP(winner.player, amount, reason) then return end
     if round.bagGUID then
@@ -259,7 +333,7 @@ function DFB.CompleteAward(round, winner)
     end
     DFB.CloseRound(winner.name, amount)
     local message = string.format("SEPGP: %s awarded to %s (%s, %d GP).",
-        round.link, winner.name, DFB.choices[winner.choice].label, amount)
+        round.link, winner.name, round.choices[winner.choice].label, amount)
     SendChatMessage(message, Channel())
     print(message .. (round.lootSlot and "" or " Trade the item to the winner."))
 end
@@ -305,25 +379,26 @@ function DFB.Open()
         return
     end
     if not DFB.masterFrame then
-        local frame = Window("SEPGPDFBMaster", "SEPGP - Distribute from bags", 960, 470)
+        local frame = Window("SEPGPDFBMaster", "SEPGP - Distribute loot", 330, 340)
         DFB.masterFrame = frame
-        frame.item = Label(frame, "", 20, -55, 530)
-        frame.status = Label(frame, "", 20, -103, 530)
-        frame.itemDetails = CreateFrame("GameTooltip", "SEPGPDFBItemDetails", frame, "GameTooltipTemplate")
-        frame.itemDetails:HookScript("OnSizeChanged", function(_, width, height)
-            if not DFB.round then return end
-            frame:SetWidth(math.max(960, 610 + width))
-            frame:SetHeight(math.max(470, 85 + height))
-        end)
-        frame.itemDetails:Hide()
+        frame:ClearAllPoints()
+        frame:SetPoint("LEFT", UIParent, "LEFT", 12, 80)
+        frame:SetClampedToScreen(true)
+        frame.item = Label(frame, "", 20, -50, 290)
+        frame.status = Label(frame, "", 20, -108, 290)
+        frame.status:SetFontObject("GameFontHighlightSmall")
         local itemHover = CreateFrame("Frame", nil, frame)
-        itemHover:SetPoint("TOPLEFT", 20, -55)
-        itemHover:SetSize(530, 45)
+        itemHover:SetPoint("TOPLEFT", 20, -50)
+        itemHover:SetSize(290, 50)
         itemHover:EnableMouse(true)
         itemHover:SetScript("OnEnter", function(self)
             if not DFB.round then return end
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetHyperlink(DFB.round.link)
+            if DFB.round.bagGUID and GameTooltip.SetItemByGUID then
+                GameTooltip:SetItemByGUID(DFB.round.bagGUID)
+            else
+                GameTooltip:SetHyperlink(DFB.round.link)
+            end
             GameTooltip:Show()
         end)
         itemHover:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -332,29 +407,67 @@ function DFB.Open()
         end)
         frame.itemHover = itemHover
         local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
-        scroll:SetPoint("TOPLEFT", 20, -160)
-        scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMLEFT", 550, 55)
+        scroll:SetPoint("TOPLEFT", 20, -150)
+        scroll:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -40, 55)
         local content = CreateFrame("Frame", nil, scroll)
-        content:SetSize(500, 260)
+        content:SetSize(250, 140)
+        frame.bidContent = content
         scroll:SetScrollChild(content)
-        frame.bids = Label(content, "", 0, 0, 500)
+        frame.bids = Label(content, "", 0, 0, 250)
         frame.bids:SetFontObject("GameFontHighlightSmall")
-        frame.award = Button(frame, "Award", 20, -425, 130, DFB.Award)
-        frame.cancel = Button(frame, "Cancel bidding", 165, -425, 150, function() DFB.CloseRound() end)
+        frame.award = Button(frame, "Award", 20, -295, 110, DFB.Award)
+        frame.cancel = Button(frame, "Cancel bidding", 140, -295, 150, function() DFB.CloseRound() end)
         frame.award:ClearAllPoints()
         frame.award:SetPoint("BOTTOMLEFT", 20, 19)
         frame.cancel:ClearAllPoints()
-        frame.cancel:SetPoint("BOTTOMLEFT", 165, 19)
-        frame:SetScript("OnHide", function() DFB.CloseRound() end)
+        frame.cancel:SetPoint("BOTTOMLEFT", 140, 19)
+        frame:SetResizable(true)
+        if frame.SetResizeBounds then frame:SetResizeBounds(260, 260, 900, 800)
+        else
+            frame:SetMinResize(260, 260)
+            frame:SetMaxResize(900, 800)
+        end
+        frame:SetScript("OnSizeChanged", function(self, width)
+            self.compactLayout = width < 330
+            self.title:SetWidth(width - 60)
+            self.item:SetWidth(width - 40)
+            self.status:SetWidth(width - 40)
+            self.itemHover:SetWidth(width - 40)
+            self.bidContent:SetWidth(width - 80)
+            self.bids:SetWidth(width - 80)
+            local buttonWidth = (width - 50) / 2
+            self.award:SetWidth(buttonWidth)
+            self.cancel:SetWidth(buttonWidth)
+            self.cancel:ClearAllPoints()
+            self.cancel:SetPoint("BOTTOMLEFT", 30 + buttonWidth, 19)
+            DFB.Refresh()
+        end)
+        local resize = CreateFrame("Button", nil, frame)
+        resize:SetSize(20, 20)
+        resize:SetPoint("BOTTOMRIGHT", -4, 4)
+        resize:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
+        resize:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
+        resize:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+        resize:SetScript("OnMouseDown", function(_, button)
+            if button == "LeftButton" then frame:StartSizing("BOTTOMRIGHT") end
+        end)
+        resize:SetScript("OnMouseUp", function() frame:StopMovingOrSizing() end)
+        frame.resizeHandle = resize
+        frame:SetScript("OnHide", function()
+            frame:StopMovingOrSizing()
+            DFB.CloseRound()
+        end)
     end
     DFB.Refresh()
     DFB.masterFrame:Show()
 end
 
-function DFB.Respond(choice)
+function DFB.Respond(choice, automaticPass)
     local offer = DFB.offer
-    if not offer or not DFB.choices[choice] then return end
+    if not offer or not offer.choices[choice]
+        or (not offer.choices[choice].active and not (automaticPass and choice == 5)) then return end
     if NameKey(DFB.GetMaster()) ~= NameKey(offer.master) then return end
+    if choice ~= 5 and SEPGP.ItemEligibility.CanPlayerUse(offer.link) ~= true then return end
     offer.responded = true
     if DFB.IsMaster() then
         DFB.RecordResponse(offer.id, GetUnitName("player", true), choice)
@@ -365,24 +478,78 @@ function DFB.Respond(choice)
 end
 
 function DFB.ShowOffer(offer)
+    offer.choices = offer.choices or SEPGP.Bids.GetDefaultChoices()
     DFB.offer = offer
+    local usable = SEPGP.ItemEligibility.CanPlayerUse(offer.link)
+    offer.waitingData = usable == nil
+    if usable == nil then
+        if DFB.bidFrame then DFB.bidFrame:Hide() end
+        local itemID = tonumber(offer.link:match("item:(%d+)"))
+        if itemID and C_Item and C_Item.RequestLoadItemDataByID then
+            C_Item.RequestLoadItemDataByID(itemID)
+        end
+        return
+    elseif not usable then
+        DFB.Respond(5, true)
+        return
+    end
     if not DFB.bidFrame then
-        local frame = Window("SEPGPDFBBid", "SEPGP - Choose your bid", 780, 230)
+        local frame = Window("SEPGPDFBBid", "SEPGP - Choose your bid", 780, 280)
         DFB.bidFrame = frame
         frame.item = Label(frame, "", 20, -55, 740)
-        for i, choice in ipairs(DFB.choices) do
+        frame.buttons = {}
+        for i = 1, 5 do
             local index = i
-            Button(frame, choice.label .. (i < 5 and " (" .. choice.percent .. "% GP)" or ""),
+            frame.buttons[i] = Button(frame, "",
                 20 + (i - 1) * 148, -145, 146, function() DFB.Respond(index) end)
+            frame.buttons[i]:SetHeight(60)
+            frame.buttons[i]:SetNormalFontObject("GameFontNormalSmall")
+            local text = frame.buttons[i]:GetFontString()
+            if text then
+                text:SetWidth(138)
+                text:SetWordWrap(true)
+            end
         end
-        Label(frame, "Category priority: BiS > Alternative > Upgrade > Off Spec. Pass excludes you.", 20, -185, 740)
+        frame.priority = Label(frame, "", 20, -220, 740)
         frame:SetScript("OnHide", function()
             -- Closing without choosing is a pass, so the master sees a response.
-            if DFB.offer and not DFB.offer.responded then DFB.Respond(5) end
+            if DFB.offer and not DFB.offer.responded and not DFB.offer.waitingData then DFB.Respond(5, true) end
         end)
     end
+    local frame = DFB.bidFrame
+    local compact = DFB.IsMaster() and true or false
+    frame:SetSize(compact and 330 or 780, compact and 320 or 280)
+    frame:SetClampedToScreen(true)
+    frame.title:SetWidth(compact and 270 or 720)
+    frame.item:SetWidth(compact and 290 or 740)
+    frame.priority:SetWidth(compact and 290 or 740)
+    frame.priority:ClearAllPoints()
+    frame.priority:SetPoint("TOPLEFT", 20, compact and -278 or -220)
+    if frame.compact ~= compact then
+        frame:ClearAllPoints()
+        if compact and DFB.masterFrame then
+            frame:SetPoint("TOPLEFT", DFB.masterFrame, "TOPRIGHT", 8, 0)
+        elseif compact then frame:SetPoint("LEFT", UIParent, "LEFT", 12, -280)
+        else frame:SetPoint("CENTER") end
+        frame.compact = compact
+    end
+    local priority = {}
+    for index, choice in ipairs(offer.choices) do
+        local button = DFB.bidFrame.buttons[index]
+        button:ClearAllPoints()
+        button:SetPoint("TOPLEFT", compact and (20 + ((index - 1) % 2) * 148) or (20 + (index - 1) * 148),
+            compact and (-125 - math.floor((index - 1) / 2) * 48) or -145)
+        button:SetHeight(compact and 44 or 60)
+        button:SetText(choice.label .. (index < 5 and "\n(" .. choice.percent .. "% GP)" or ""))
+        if choice.active then
+            button:Show()
+            if index < 5 then priority[#priority + 1] = choice.label end
+        else button:Hide() end
+    end
+    DFB.bidFrame.priority:SetText("Category priority: " .. table.concat(priority, " > ") .. ". Closing declines.")
     DFB.offer.responded = false
-    DFB.bidFrame.item:SetText(offer.link .. "\nBase GP: " .. offer.gp .. " | Master looter: " .. offer.master)
+    DFB.bidFrame.item:SetText(offer.link .. "\nBase GP: " .. offer.gp
+        .. (compact and "" or " | Master looter: " .. offer.master))
     DFB.bidFrame:Show()
 end
 
@@ -391,7 +558,9 @@ function DFB.RecordResponse(id, sender, choice)
     local key = NameKey(sender)
     if not DFB.IsMaster() or not round or round.pendingAward or round.id ~= id
         or not round.eligible[key] or not DFB.GetRoster()[key]
-        or type(choice) ~= "number" or choice % 1 ~= 0 or not DFB.choices[choice] then return end
+        or type(choice) ~= "number" or choice % 1 ~= 0 or not round.choices[choice]
+        or (choice ~= 5 and not round.choices[choice].active) then return end
+    if choice ~= 5 and not SEPGP.ItemEligibility.CanClassUse(round.classes[key], round.itemInfo) then return end
     round.responses[key] = choice
     DFB.Refresh()
     return true
@@ -400,10 +569,9 @@ end
 function DFB.HandleWhisper(message, sender)
     local round = DFB.round
     if not round or type(message) ~= "string" then return end
-    local bid = message:match("^%s*(.-)%s*$"):lower():gsub("%s+", " ")
-    if bid == "offspec" then bid = "off spec" end
-    for index, choice in ipairs(DFB.choices) do
-        if bid == choice.label:lower() then
+    local bid = SEPGP.Bids.Key(message)
+    for index, choice in ipairs(round.choices) do
+        if choice.active and bid == SEPGP.Bids.Key(choice.label) then
             if DFB.RecordResponse(round.id, sender, index) then
                 -- Close an installed addon's popup after a whisper bid, so
                 -- dismissing it cannot accidentally replace the bid with Pass.
@@ -425,19 +593,34 @@ function DFB.Start(link, bag, slot, lootSlot)
     local gp, err = SEPGP.GP.GetItemGP(link)
     if not gp then print("SEPGP: Cannot distribute this item: " .. tostring(err)); return end
     local id = SEPGP.GenerateActionID()
-    DFB.round = { id = id, link = link, gp = gp, eligible = DFB.GetRoster(), responses = {},
+    local roster, classes = DFB.GetRoster()
+    DFB.round = { id = id, link = link, gp = gp, eligible = roster, classes = classes, responses = {},
+        itemInfo = SEPGP.ItemEligibility.GetInfo(link),
+        choices = SEPGP.Bids.GetChoices(),
         bagGUID = DFB.GetBagItemGUID(bag, slot), lootSlot = lootSlot, lootSession = DFB.lootSession }
     DFB.seen[id] = true
-    DFB.Send({ kind = "START", id = id, link = link, gp = gp })
-    DFB.ShowOffer({ id = id, link = link, gp = gp, master = GetUnitName("player", true) })
+    DFB.Send({ kind = "START", id = id, link = link, gp = gp, choices = DFB.round.choices })
+    DFB.ShowOffer({ id = id, link = link, gp = gp, master = GetUnitName("player", true), choices = DFB.round.choices })
     DFB.Refresh()
     SendChatMessage("SEPGP: Distributing " .. link .. " (" .. gp .. " base GP).", Channel())
     local choices = {}
-    for index, choice in ipairs(DFB.choices) do
-        choices[#choices + 1] = choice.label
-            .. (index < 5 and " (" .. choice.percent .. "% GP)" or "")
+    for index, choice in ipairs(DFB.round.choices) do
+        if choice.active then
+            choices[#choices + 1] = choice.label
+                .. (index < 5 and " (" .. choice.percent .. "% GP)" or "")
+        end
     end
-    SendChatMessage("SEPGP: Click a button or whisper me: " .. table.concat(choices, ", ") .. ".", Channel())
+    local prefix = "SEPGP: Click a button or whisper me: "
+    local message = prefix
+    for _, choice in ipairs(choices) do
+        local separator = message == prefix and "" or ", "
+        if #message + #separator + #choice + 1 > 255 then
+            SendChatMessage(message .. ".", Channel())
+            message, separator = prefix, ""
+        end
+        message = message .. separator .. choice
+    end
+    if message ~= prefix then SendChatMessage(message .. ".", Channel()) end
 end
 
 function DFB:OnCommReceived(prefix, message, channel, sender)
@@ -454,7 +637,7 @@ function DFB:OnCommReceived(prefix, message, channel, sender)
         if channel == "WHISPER" and offer and offer.id == payload.id
             and NameKey(sender) == NameKey(offer.master)
             and NameKey(sender) == NameKey(DFB.GetMaster())
-            and type(payload.choice) == "number" and DFB.choices[payload.choice] then
+            and type(payload.choice) == "number" and offer.choices[payload.choice] then
             offer.responded = true
             if DFB.bidFrame then DFB.bidFrame:Hide() end
         end
@@ -467,8 +650,11 @@ function DFB:OnCommReceived(prefix, message, channel, sender)
             or #payload.link > 1024 or not payload.link:match("|Hitem:%d+:")
             or type(payload.gp) ~= "number" or payload.gp < 0
             or payload.gp ~= payload.gp or payload.gp == math.huge then return end
+        if payload.choices ~= nil and not SEPGP.Bids.Validate(payload.choices) then return end
+        local choices = payload.choices and SEPGP.Bids.GetChoices(payload.choices)
+            or SEPGP.Bids.GetDefaultChoices()
         DFB.seen[payload.id] = true
-        DFB.ShowOffer({ id = payload.id, link = payload.link, gp = payload.gp, master = sender })
+        DFB.ShowOffer({ id = payload.id, link = payload.link, gp = payload.gp, master = sender, choices = choices })
     elseif payload.kind == "CLOSE" then
         DFB.seen[payload.id] = true
         if DFB.offer and DFB.offer.id == payload.id then
@@ -582,7 +768,35 @@ events:RegisterEvent("LOOT_CLOSED")
 events:RegisterEvent("CHAT_MSG_WHISPER")
 events:RegisterEvent("BAG_UPDATE_DELAYED")
 events:RegisterEvent("PLAYER_ENTERING_WORLD")
+events:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+events:RegisterEvent("TRADE_SHOW")
+events:RegisterEvent("TRADE_CLOSED")
+events:RegisterEvent("TRADE_PLAYER_ITEM_CHANGED")
+events:RegisterEvent("ITEM_LOCK_CHANGED")
 events:SetScript("OnEvent", function(_, event, ...)
+    if event == "TRADE_SHOW" then DFB.BeginAwardedTrade(); return end
+    if event == "TRADE_CLOSED" then
+        DFB.trade = nil
+        if C_Timer and C_Timer.After then C_Timer.After(0.1, DFB.PruneBagAwards) end
+        return
+    end
+    if event == "TRADE_PLAYER_ITEM_CHANGED" or event == "ITEM_LOCK_CHANGED" then
+        DFB.FillAwardedTrade()
+        return
+    end
+    if event == "GET_ITEM_INFO_RECEIVED" then
+        local itemID, success = ...
+        local offer = DFB.offer
+        if offer and offer.waitingData and not offer.responded
+            and tonumber(offer.link:match("item:(%d+)")) == itemID
+            and NameKey(offer.master) == NameKey(DFB.GetMaster()) then
+            -- Failed data loads do not establish that an item is unusable.
+            if success or SEPGP.ItemEligibility.CanPlayerUse(offer.link) ~= nil then
+                DFB.ShowOffer(offer)
+            end
+        end
+        return
+    end
     if event == "UI_ERROR_MESSAGE" then
         local _, message = ...
         local round = DFB.round
@@ -602,6 +816,7 @@ events:SetScript("OnEvent", function(_, event, ...)
     end
     if event == "BAG_UPDATE_DELAYED" or event == "PLAYER_ENTERING_WORLD" then
         DFB.PruneBagAwards()
+        DFB.FillAwardedTrade()
         return
     end
     if event == "CHAT_MSG_WHISPER" then

@@ -15,6 +15,15 @@ GetUnitName = function(unit)
     if unit == "player" then return me end
     return roster[tonumber(unit:match("raid(%d+)"))]
 end
+UnitClass = function(unit)
+    local name = GetUnitName(unit)
+    if name == "Alice-Realm" then return "Mage", "MAGE" end
+    if name == "Bob-Realm" then return "Warrior", "WARRIOR" end
+end
+RAID_CLASS_COLORS = {
+    MAGE = { r = 0.25, g = 0.75, b = 1 },
+    WARRIOR = { r = 0.75, g = 0.5, b = 0.25 },
+}
 IsInGroup = function() return grouped end
 IsInRaid = function() return grouped end
 GetNumGroupMembers = function() return #roster end
@@ -45,6 +54,18 @@ local function frame()
         if wasShown and self.scripts.OnHide then self.scripts.OnHide(self) end
     end
     f.SetText = function(self, value) self.text = value end
+    f.SetSize = function(self, width, height) self.width, self.height = width, height end
+    f.SetWidth = function(self, width) self.width = width end
+    f.SetResizeBounds = function(self, minWidth, minHeight, maxWidth, maxHeight)
+        self.resizeBounds = { minWidth, minHeight, maxWidth, maxHeight }
+    end
+    f.StartSizing = function(self)
+        local bounds = self.resizeBounds
+        self.width = math.min(bounds[3], math.max(bounds[1], self.width))
+        self.height = math.min(bounds[4], math.max(bounds[2], self.height))
+        self.sizing = true
+    end
+    f.StopMovingOrSizing = function(self) self.sizing = false end
     f.CreateFontString = frame
     f.CreateTexture = frame
     frames[#frames + 1] = f
@@ -63,10 +84,15 @@ end
 dofile("SEPGP-Forever/EPGP.lua")
 LibStub("AceSerializer-3.0"):Embed(SEPGP)
 dofile("SEPGP-Forever/UI.lua") -- Matches the active core overrides in the TOC.
+dofile("SEPGP-Forever/SettingsData.lua")
+dofile("SEPGP-Forever/Standings.lua")
 dofile("SEPGP-Forever/raidep.lua")
 local link = "|cffa335ee|Hitem:123:0:0:0|h[Test item]|h|r"
 SEPGP.GP = { GetItemGP = function() return 101 end }
+dofile("SEPGP-Forever/SettingsData.lua")
+dofile("SEPGP-Forever/BidSettings.lua")
 C_Container = { GetContainerItemLink = function() return link end }
+dofile("SEPGP-Forever/ItemEligibility.lua")
 dofile("SEPGP-Forever/dfb.lua")
 local events = frames[#frames]
 local DFB = SEPGP.DFB
@@ -109,6 +135,24 @@ assert(not DFB.masterFrame)
 me = master
 SlashCmdList.SEPGP(" DfB ")
 assert(DFB.masterFrame:IsShown())
+-- Beginning a resize must preserve the compact size and enforce a bounded range.
+DFB.masterFrame.resizeHandle.scripts.OnMouseDown(nil, "LeftButton")
+assert(DFB.masterFrame.width == 330 and DFB.masterFrame.height == 340)
+DFB.masterFrame.resizeHandle.scripts.OnMouseUp()
+assert(not DFB.masterFrame.sizing)
+DFB.masterFrame:SetSize(2000, 2000)
+DFB.masterFrame.resizeHandle.scripts.OnMouseDown(nil, "LeftButton")
+assert(DFB.masterFrame.width == 900 and DFB.masterFrame.height == 800)
+DFB.masterFrame.resizeHandle.scripts.OnMouseUp()
+DFB.masterFrame:SetSize(200, 200)
+DFB.masterFrame.resizeHandle.scripts.OnMouseDown(nil, "LeftButton")
+assert(DFB.masterFrame.width == 260 and DFB.masterFrame.height == 260)
+DFB.masterFrame.scripts.OnSizeChanged(DFB.masterFrame, 260, 260)
+assert(DFB.masterFrame.compactLayout and DFB.masterFrame.bidContent.width == 180)
+assert(DFB.masterFrame.award.width == 105 and DFB.masterFrame.cancel.width == 105)
+DFB.masterFrame.resizeHandle.scripts.OnMouseUp()
+DFB.masterFrame:SetSize(330, 340)
+DFB.masterFrame.scripts.OnSizeChanged(DFB.masterFrame, 330, 340)
 -- Exercise the bag hook installed on addon load.
 events.scripts.OnEvent(nil, "ADDON_LOADED")
 hooks.ContainerFrameItemButton_OnModifiedClick({
@@ -154,10 +198,13 @@ receive({ kind = "BID", id = id, choice = 2 }, "RAID", "Alice")
 assert(not DFB.round.responses["alice-realm"])
 receive({ kind = "BID", id = id, choice = 2 }, "WHISPER", "Alice")
 DFB.RecordResponse(id, "Bob", 3)
+assert(DFB.masterFrame.bids.text:find("|cff40bfffAlice-Realm|r", 1, true))
+assert(DFB.masterFrame.bids.text:find("|cffbf8040Bob-Realm|r", 1, true))
 assert(DFB.GetRankedBids()[1].name == "Alice-Realm") -- Category beats ratio.
 DFB.RecordResponse(id, "Bob", 2)
 assert(DFB.GetRankedBids()[1].name == "Bob-Realm") -- Ratio within category.
 DFB.RecordResponse(id, "Bob", 5)
+assert(DFB.masterFrame.bids.text:find("|cffbf8040Bob-Realm|r - Pass", 1, true))
 local beforeAwardAnnouncements = #announcements
 DFB.Award()
 assert(SEPGP_DB.players.alice.GP == 181) -- 80%, rounded to integer GP.
@@ -350,7 +397,8 @@ GetLootMethod = function() return "master", nil, 1 end
 local inventory = { ["0:1"] = "Item-A", ["0:2"] = "Item-B", ["0:3"] = "Item-C" }
 ItemLocation = {
     CreateFromBagAndSlot = function(_, bag, slot)
-        return { bag = bag, slot = slot }
+        return { bag = bag, slot = slot, IsBagAndSlot = function() return true end,
+            GetBagAndSlot = function() return bag, slot end }
     end,
 }
 C_Item.GetItemGUID = function(location)
@@ -360,7 +408,7 @@ C_Item.GetItemLocation = function(guid)
     for position, value in pairs(inventory) do
         if value == guid then
             local bag, slot = position:match("^(-?%d+):(%d+)$")
-            return { bag = tonumber(bag), slot = tonumber(slot) }
+            return ItemLocation:CreateFromBagAndSlot(tonumber(bag), tonumber(slot))
         end
     end
 end
@@ -410,6 +458,13 @@ assert(tooltipLines("Item-A")[1] == "SEPGP: Awarded to Alice-Realm")
 assert(tooltipLines("Item-B")[1] == "SEPGP: Awarded to Bob-Realm")
 assert(tooltipLines("Item-C")[1] == "SEPGP GP: 101")
 assert(tooltipLines(nil)[1] == "SEPGP GP: 101")
+SEPGP.SetGPTooltipEnabled(false)
+assert(#tooltipLines(nil) == 0)
+assert(#tooltipLines("Item-C") == 0)
+local hiddenGP = tooltipLines("Item-A")
+assert(#hiddenGP == 1 and hiddenGP[1] == "SEPGP: Awarded to Alice-Realm")
+SEPGP.SetGPTooltipEnabled(true)
+assert(tooltipLines(nil)[1] == "SEPGP GP: 101")
 SEPGP.GP.GetItemGP = function() return nil end
 assert(tooltipLines("Item-A")[1] == "SEPGP: Awarded to Alice-Realm")
 me = "Alice-Realm"
@@ -420,6 +475,109 @@ DFB = SEPGP.DFB
 events = frames[#frames]
 events.scripts.OnEvent(nil, "PLAYER_ENTERING_WORLD")
 assert(DFB.GetAwardRecipient("Item-A") == "Alice-Realm")
+-- Trade opening fills only the matching recipient's exact awarded instances.
+local previousUnitName, previousAfter = GetUnitName, C_Timer.After
+local partner, tradeItems, tradePositions, cursor, tradeTimers = "Alice-Realm", {}, {}, nil, {}
+local locked, rejected, placements, clears = {}, {}, 0, 0
+GetUnitName = function(unit, full)
+    if unit == "NPC" then return partner end
+    return previousUnitName(unit, full)
+end
+C_Timer.After = function(_, callback) tradeTimers[#tradeTimers + 1] = callback end
+local function drainTradeTimers()
+    while #tradeTimers > 0 do local callback = table.remove(tradeTimers, 1); callback() end
+end
+GetCursorInfo = function() if cursor then return "item", 123, link end end
+GetTradePlayerItemLink = function(slot) if tradeItems[slot] then return link end end
+C_Container.GetContainerItemInfo = function(bag, slot)
+    return { isLocked = locked[inventory[bag .. ":" .. slot]] }
+end
+C_Container.PickupContainerItem = function(bag, slot)
+    local position = bag .. ":" .. slot
+    cursor = { guid = inventory[position], position = position }
+    inventory[position] = nil
+end
+ClickTradeButton = function(slot)
+    assert(slot >= 1 and slot <= 6 and not tradeItems[slot])
+    if rejected[cursor.guid] then return end
+    tradeItems[slot] = cursor.guid
+    tradePositions[cursor.guid] = cursor.position
+    cursor = nil
+    placements = placements + 1
+end
+ClearCursor = function()
+    clears = clears + 1
+    inventory[cursor.position] = cursor.guid
+    cursor = nil
+end
+local function cancelTrade()
+    for _, guid in pairs(tradeItems) do
+        if tradePositions[guid] then inventory[tradePositions[guid]] = guid end
+    end
+    tradeItems, tradePositions = {}, {}
+    events.scripts.OnEvent(nil, "TRADE_CLOSED")
+    drainTradeTimers()
+end
+local beforeTradeRevision = SEPGP_DB.revision
+tradeItems[1] = "Manual item"
+events.scripts.OnEvent(nil, "TRADE_SHOW")
+drainTradeTimers()
+assert(tradeItems[1] == "Manual item" and tradeItems[2] == "Item-A")
+assert(inventory["0:2"] == "Item-B" and inventory["0:3"] == "Item-C")
+assert(SEPGP_DB.revision == beforeTradeRevision)
+events.scripts.OnEvent(nil, "BAG_UPDATE_DELAYED")
+assert(DFB.GetAwardRecipient("Item-A") == "Alice-Realm")
+events.scripts.OnEvent(nil, "TRADE_PLAYER_ITEM_CHANGED", 2)
+assert(placements == 1)
+cancelTrade()
+assert(DFB.GetAwardRecipient("Item-A") == "Alice-Realm" and inventory["2:6"] == "Item-A")
+partner = "Alice-OtherRealm"
+events.scripts.OnEvent(nil, "TRADE_SHOW")
+drainTradeTimers()
+assert(placements == 1)
+cancelTrade()
+-- Existing cursor items are untouched; cancelled deferred fills cannot run later.
+partner, cursor = "Alice-Realm", { guid = "User cursor item" }
+events.scripts.OnEvent(nil, "TRADE_SHOW")
+drainTradeTimers()
+assert(placements == 1 and clears == 0 and cursor.guid == "User cursor item")
+cancelTrade()
+cursor = nil
+events.scripts.OnEvent(nil, "TRADE_SHOW")
+events.scripts.OnEvent(nil, "TRADE_CLOSED")
+drainTradeTimers()
+assert(placements == 1)
+-- Find moved items, skip locks, and return rejected items without consuming a slot.
+inventory["2:6"], inventory["3:1"] = nil, "Item-A"
+inventory["0:4"], inventory["0:5"] = "Item-0", "Item-D"
+DFB.GetBagAwards()["Item-0"] = { winner = partner, link = link }
+DFB.GetBagAwards()["Item-D"] = { winner = partner, link = link }
+rejected["Item-0"], locked["Item-D"] = true, true
+events.scripts.OnEvent(nil, "TRADE_SHOW")
+drainTradeTimers()
+assert(tradeItems[1] == "Item-A" and inventory["0:4"] == "Item-0" and clears == 1)
+locked["Item-D"] = false
+events.scripts.OnEvent(nil, "ITEM_LOCK_CHANGED", 0, 5)
+assert(tradeItems[2] == "Item-D")
+cancelTrade()
+-- Only six transferable slots are filled; excess awards stay in the bags.
+for index = 1, 7 do
+    local guid = "Extra-" .. index
+    inventory["4:" .. index] = guid
+    DFB.GetBagAwards()[guid] = { winner = partner, link = link }
+end
+events.scripts.OnEvent(nil, "TRADE_SHOW")
+drainTradeTimers()
+for slot = 1, 6 do assert(tradeItems[slot] == "Extra-" .. slot) end
+assert(not tradeItems[7] and inventory["4:7"] == "Extra-7")
+events.scripts.OnEvent(nil, "TRADE_CLOSED") -- Completed trade leaves offered items outside inventory.
+drainTradeTimers()
+assert(not DFB.GetAwardRecipient("Extra-1") and DFB.GetAwardRecipient("Extra-7") == partner)
+tradeItems, tradePositions = {}, {}
+inventory["3:1"], inventory["2:6"] = nil, "Item-A"
+GetUnitName, C_Timer.After = previousUnitName, previousAfter
+GetCursorInfo, GetTradePlayerItemLink, ClickTradeButton, ClearCursor = nil, nil, nil, nil
+
 events.scripts.OnEvent(nil, "BAG_UPDATE_DELAYED") -- Cancelled trade keeps item.
 assert(DFB.GetAwardRecipient("Item-A") == "Alice-Realm")
 inventory["2:6"] = nil -- Completed trade removes that exact item instance.
@@ -505,4 +663,165 @@ DFB.RecordResponse(DFB.round.id, me, 4)
 DFB.Award()
 assert(announcements[#announcements].channel == "PARTY")
 assert(announcements[#announcements].message:find("awarded to Master-Realm (Off Spec, 0 GP)", 1, true))
+-- Custom buttons are snapshotted for the round and shared with bidders.
+IsInRaid = function() return true end
+GetLootMethod = function() return "master", nil, 1 end
+DFB.Open()
+local custom = SEPGP.Bids.Copy(SEPGP.Bids.GetSettings())
+custom[1].label, custom[1].discount = "Main Spec", 25
+custom[2].active = false
+custom[5].label, custom[5].active = "Decline", false
+assert(SEPGP.Bids.SetSettings(custom))
+DFB.Start(link)
+local customID = DFB.round.id
+assert(DFB.round.choices[1].percent == 75)
+assert(DFB.bidFrame.buttons[1].text:find("Main Spec", 1, true))
+assert(not DFB.bidFrame.buttons[2]:IsShown() and not DFB.bidFrame.buttons[5]:IsShown())
+assert(not announcements[#announcements].message:find("Alternative", 1, true))
+local startPayload
+for index = #sent, 1, -1 do
+    local ok, payload = SEPGP:Deserialize(sent[index][2])
+    if ok and payload.kind == "START" and payload.id == customID then startPayload = payload; break end
+end
+assert(startPayload.choices[1].discount == 25 and not startPayload.choices[2].active)
+DFB.RecordResponse(customID, "Alice", 2)
+assert(not DFB.round.responses["alice-realm"])
+DFB.HandleWhisper("Alternative", "Alice")
+assert(not DFB.round.responses["alice-realm"])
+DFB.HandleWhisper(" MAIN   SPEC ", "Alice")
+assert(DFB.round.responses["alice-realm"] == 1)
+SEPGP.Bids.ResetSettings() -- Editing settings cannot change an existing award.
+local beforeCustom = SEPGP_DB.players.alice.GP
+DFB.Award()
+assert(SEPGP_DB.players.alice.GP == beforeCustom + 76)
+assert(announcements[#announcements].message:find("Main Spec, 76 GP", 1, true))
+-- Remote popup uses the master's settings, even when local settings differ.
+me = "Alice-Realm"
+receive({ kind = "START", id = "custom-remote", link = link, gp = 101,
+    choices = startPayload.choices }, "RAID", master)
+assert(DFB.offer.choices[1].label == "Main Spec")
+assert(not DFB.bidFrame.buttons[2]:IsShown())
+local beforeDisabled = #sent
+DFB.Respond(2)
+assert(#sent == beforeDisabled and not DFB.offer.responded)
+DFB.bidFrame:Hide() -- Automatic Pass still works with the Pass button hidden.
+local ok, decline = SEPGP:Deserialize(sent[#sent][2])
+assert(ok and decline.choice == 5)
+receive({ kind = "CLOSE", id = "custom-remote" }, "RAID", master)
+local invalidChoices = SEPGP.Bids.Copy(custom)
+invalidChoices[1].discount = -1
+receive({ kind = "START", id = "invalid-choices", link = link, gp = 101,
+    choices = invalidChoices }, "RAID", master)
+assert(not DFB.offer)
+-- Old START messages continue to use the original defaults.
+receive({ kind = "START", id = "legacy-choices", link = link, gp = 101 }, "RAID", master)
+assert(DFB.offer.choices[1].label == "BiS" and DFB.bidFrame.buttons[2]:IsShown())
+receive({ kind = "CLOSE", id = "legacy-choices" }, "RAID", master)
+-- Class eligibility applies to incoming offers and to bids sent to the master.
+local itemClass, itemSubclass, equipLoc, itemCached = 4, 4, "INVTYPE_CHEST", true
+local localClass = "MAGE"
+local savedUnitClass = UnitClass
+UnitClass = function(unit)
+    if unit == "player" then return localClass, localClass end
+    return savedUnitClass(unit)
+end
+local requestedItem
+C_Item.GetItemInfo = function()
+    if not itemCached then return nil end
+    return "Equipment", link, 4, 104, nil, nil, nil, nil, equipLoc, nil, nil, itemClass, itemSubclass
+end
+C_Item.RequestLoadItemDataByID = function(itemID) requestedItem = itemID end
+local Eligibility = SEPGP.ItemEligibility
+for _, class in ipairs({ "WARRIOR", "PALADIN", "HUNTER", "SHAMAN", "ROGUE", "DRUID", "MAGE", "PRIEST", "WARLOCK" }) do
+    localClass = class
+    assert(Eligibility.CanPlayerUse(link) == (class == "WARRIOR" or class == "PALADIN"))
+end
+localClass = "MAGE"
+receive({ kind = "START", id = "plate-mage", link = link, gp = 101 }, "RAID", master)
+assert(not DFB.bidFrame:IsShown() and DFB.offer.responded)
+local ok, automaticPass = SEPGP:Deserialize(sent[#sent][2])
+assert(ok and automaticPass.choice == 5 and automaticPass.id == "plate-mage")
+receive({ kind = "CLOSE", id = "plate-mage" }, "RAID", master)
+localClass = "WARRIOR"
+receive({ kind = "START", id = "plate-warrior", link = link, gp = 101 }, "RAID", master)
+assert(DFB.bidFrame:IsShown() and not DFB.bidFrame.compact)
+receive({ kind = "CLOSE", id = "plate-warrior" }, "RAID", master)
+itemClass, itemSubclass, equipLoc = 2, 7, "INVTYPE_WEAPON"
+localClass = "DRUID"
+assert(not Eligibility.CanPlayerUse(link))
+receive({ kind = "START", id = "sword-druid", link = link, gp = 101 }, "RAID", master)
+assert(not DFB.bidFrame:IsShown() and DFB.offer.responded)
+receive({ kind = "CLOSE", id = "sword-druid" }, "RAID", master)
+itemSubclass = 10 -- Staff is usable by druids.
+receive({ kind = "START", id = "staff-druid", link = link, gp = 101 }, "RAID", master)
+assert(DFB.bidFrame:IsShown())
+receive({ kind = "CLOSE", id = "staff-druid" }, "RAID", master)
+-- Current usability (level, trained skills, etc.) must not exclude compatible gear.
+C_Item.IsUsableItem = function() return false, false end
+assert(Eligibility.CanPlayerUse(link))
+C_Item.IsUsableItem = function() return false, true end
+assert(Eligibility.CanPlayerUse(link)) -- Lack of mana does not make a class ineligible.
+C_Item.IsUsableItem = nil
+-- Linen cloth is a trade good, not cloth armor. Everyone receives its popup.
+itemClass, itemSubclass, equipLoc = 7, 1, ""
+C_Item.IsUsableItem = function() return false, false end
+for _, class in ipairs({ "WARRIOR", "PALADIN", "HUNTER", "SHAMAN", "ROGUE", "DRUID", "MAGE", "PRIEST", "WARLOCK" }) do
+    localClass = class
+    assert(Eligibility.CanPlayerUse(link))
+    local id = "linen-" .. class
+    receive({ kind = "START", id = id, link = link, gp = 101 }, "RAID", master)
+    assert(DFB.bidFrame:IsShown() and not DFB.offer.responded)
+    receive({ kind = "CLOSE", id = id }, "RAID", master)
+end
+-- Both druids and warriors can bid on one-handed maces even when IsUsableItem is false.
+itemClass, itemSubclass, equipLoc = 2, 4, "INVTYPE_WEAPON"
+for _, class in ipairs({ "DRUID", "WARRIOR" }) do
+    localClass = class
+    local id = "mace-" .. class
+    receive({ kind = "START", id = id, link = link, gp = 101 }, "RAID", master)
+    assert(DFB.bidFrame:IsShown() and not DFB.offer.responded)
+    DFB.Respond(1)
+    local ok, maceBid = SEPGP:Deserialize(sent[#sent][2])
+    assert(ok and maceBid.id == id and maceBid.choice == 1)
+    receive({ kind = "CLOSE", id = id }, "RAID", master)
+end
+C_Item.IsUsableItem = nil
+-- Instant type metadata resolves uncached trade goods without auto-passing.
+itemCached = false
+C_Item.GetItemInfoInstant = function() return 123, "Trade Goods", "Cloth", "", nil, 7, 1 end
+assert(Eligibility.CanPlayerUse(link))
+C_Item.GetItemInfoInstant = nil
+itemClass, itemSubclass, equipLoc, localClass = 2, 10, "INVTYPE_2HWEAPON", "DRUID"
+-- Uncached items wait for data; closing a round prevents a late popup.
+itemCached = false
+receive({ kind = "START", id = "uncached", link = link, gp = 101 }, "RAID", master)
+assert(DFB.offer.waitingData and not DFB.bidFrame:IsShown() and requestedItem == 123)
+local sentBeforeFailedLoad = #sent
+events.scripts.OnEvent(nil, "GET_ITEM_INFO_RECEIVED", 123, false)
+assert(#sent == sentBeforeFailedLoad and not DFB.offer.responded and DFB.offer.waitingData)
+itemCached = true
+events.scripts.OnEvent(nil, "GET_ITEM_INFO_RECEIVED", 123, true)
+assert(DFB.bidFrame:IsShown() and not DFB.offer.waitingData)
+receive({ kind = "CLOSE", id = "uncached" }, "RAID", master)
+itemCached = false
+receive({ kind = "START", id = "closed-uncached", link = link, gp = 101 }, "RAID", master)
+receive({ kind = "CLOSE", id = "closed-uncached" }, "RAID", master)
+itemCached = true
+events.scripts.OnEvent(nil, "GET_ITEM_INFO_RECEIVED", 123, true)
+assert(not DFB.offer and not DFB.bidFrame:IsShown())
+-- A master who cannot equip the item can distribute it, but automatically passes.
+me, localClass = master, "MAGE"
+itemClass, itemSubclass, equipLoc = 4, 4, "INVTYPE_CHEST"
+DFB.Open()
+DFB.Start(link)
+assert(DFB.round and DFB.round.responses["master-realm"] == 5)
+DFB.RecordResponse(DFB.round.id, "Alice", 1) -- Mage cannot bid on plate.
+assert(not DFB.round.responses["alice-realm"])
+DFB.RecordResponse(DFB.round.id, "Bob", 1)
+assert(DFB.GetRankedBids()[1].name == "Bob-Realm")
+DFB.CloseRound()
+localClass = "WARRIOR"
+DFB.Start(link)
+assert(DFB.bidFrame:IsShown() and DFB.bidFrame.compact)
+DFB.CloseRound()
 output("DFB tests passed")
