@@ -56,7 +56,7 @@ function SEPGP.NormalizeName(name)
         return nil
     end
 
-    return string.lower(name)
+    return string.lower((name:match("^[^-]+") or name):match("^%s*(.-)%s*$"))
 end
 
 function SEPGP.GetPlayer(name)
@@ -133,10 +133,10 @@ function SEPGP.ApplyAction(action)
         )
 
     elseif action.type == "GP" then
-        player.GP = math.max(
+        if action.amount ~= 0 then player.GP = math.max(
             SEPGP.BASE_GP,
             player.GP + action.amount
-        )
+        ) end
 
     elseif action.type == "DECAY" then
         local multiplier = 1 - action.amount / 100
@@ -332,16 +332,17 @@ function SEPGP.PrintHistory()
 
         print(
             string.format(
-                "[%s] %+g %s -> %s | %s/%s -> %s/%s | by %s",
+                "[%s] %+g %s -> %s | %s/%s -> %s/%s | by %s | Reason: %s",
                 action.id or "?",
                 action.amount or 0,
                 action.type or "?",
-                action.player or "?",
+                SEPGP.DisplayName(action.player),
                 tostring(beforeEP),
                 tostring(beforeGP),
                 tostring(afterEP),
                 tostring(afterGP),
-                action.actor or "?"
+                SEPGP.DisplayName(action.actor),
+                action.reason and action.reason ~= "" and action.reason or "No reason recorded"
             )
         )
     end
@@ -381,7 +382,7 @@ function SEPGP.PrintStandings()
             string.format(
                 "%d. %s | EP: %g | GP: %g | PR: %.2f",
                 index,
-                player.name,
+                SEPGP.DisplayName(player.name),
                 player.EP,
                 player.GP,
                 player.PR
@@ -571,6 +572,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
 end)
 
 function SEPGP.HandleAddonMessage(prefix, message, channel, sender)
+    if prefix ~= SEPGP.PREFIX then return end
 local debugMessage = message:gsub("|", "||")
 
     print(
@@ -685,10 +687,10 @@ local debugMessage = message:gsub("|", "||")
             print(
                 string.format(
                     "SEPGP sync: %s %+g %s from %s",
-                    action.player,
+                    SEPGP.DisplayName(action.player),
                     action.amount,
                     action.type,
-                    sender
+                    SEPGP.DisplayName(sender)
                 )
             )
         end
@@ -840,6 +842,8 @@ SlashCmdList["SEPGP"] = function(msg)
     end
 
     if string.lower(msg) == "cleardb" then -- TODO: REMOVE LATER, DANGEROUS
+        if SEPGP.CancelHistorySync then SEPGP.CancelHistorySync() end
+        SEPGP.sendQueue = {}
         SEPGP_DB = {
             revision = 0,
             localCounter = 0,
@@ -847,7 +851,7 @@ SlashCmdList["SEPGP"] = function(msg)
             actions = {},
         }
 
-        print("SEPGP database cleared.")
+        print("SEPGP database and sync checkpoint cleared.")
         return
     end
 

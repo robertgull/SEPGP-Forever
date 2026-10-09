@@ -35,7 +35,9 @@ strsplit = function(delimiter, value)
     return unpack(parts)
 end
 dofile("SEPGP-Forever/EPGP.lua")
+dofile("SEPGP-Forever/SettingsData.lua")
 dofile("SEPGP-Forever/UI.lua")
+dofile("SEPGP-Forever/PlayerNames.lua")
 dofile("SEPGP-Forever/raidep.lua")
 SEPGP.UI = { standingsFrame = { IsShown = function() return true end } }
 SEPGP.RefreshStandingsWindow = function() refreshes = refreshes + 1 end
@@ -56,8 +58,8 @@ throttle = true
 SlashCmdList.SEPGP("  RaIdEp 100 Boss kill  ")
 assert(SEPGP_DB.players.alice.EP == 110 and SEPGP_DB.players.alice.GP == 120)
 assert(not SEPGP_DB.players["alice-realm"])
-assert(SEPGP_DB.players["bob-otherrealm"].EP == 150)
-assert(SEPGP_DB.players["officer-realm"].EP == 100)
+assert(SEPGP_DB.players.bob.EP == 150)
+assert(SEPGP_DB.players.officer.EP == 100)
 assert(SEPGP_DB.players.standby.EP == 25)
 assert(SEPGP_DB.revision == 3 and refreshes == 1 and #announcements == 1)
 for _, action in pairs(SEPGP_DB.actions) do
@@ -94,7 +96,7 @@ local beforeBroadcasts = #broadcasts
 assert(SEPGP.AwardRaidEP(25, "Attendance") == 40)
 drain()
 assert(#broadcasts == beforeBroadcasts + 40)
-for i = 1, 40 do assert(SEPGP_DB.players["raider" .. i .. "-realm"].EP == 25) end
+for i = 1, 40 do assert(SEPGP_DB.players["raider" .. i].EP == 25) end
 -- Another officer can apply the existing wire actions idempotently.
 SEPGP_DB = { players = {}, actions = {}, revision = 0, localCounter = 0 }
 for i = beforeBroadcasts + 1, #broadcasts do
@@ -102,5 +104,5 @@ for i = beforeBroadcasts + 1, #broadcasts do
     SEPGP.HandleAddonMessage("SEPGPF", broadcasts[i], "OFFICER", "Officer-Realm")
 end
 assert(SEPGP_DB.revision == 40)
-for i = 1, 40 do assert(SEPGP_DB.players["raider" .. i .. "-realm"].EP == 25) end
+for i = 1, 40 do assert(SEPGP_DB.players["raider" .. i].EP == 25) end
 output("Raid EP tests passed")

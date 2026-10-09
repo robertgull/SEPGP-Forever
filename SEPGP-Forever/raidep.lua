@@ -2,16 +2,7 @@
 SEPGP = SEPGP or {}
 
 local function RaidPlayerName(name)
-    local short, realm = name:match("^([^-]+)%-(.+)$")
-    local localRealm = GetNormalizedRealmName()
-    if not short then short, realm = name, localRealm end
-    local full = SEPGP.NormalizeName(short .. "-" .. realm)
-    -- Keep existing same-realm records instead of creating a second account.
-    if SEPGP.GetPlayer(full) then return full end
-    if realm:lower() == localRealm:lower() and SEPGP.GetPlayer(short) then
-        return SEPGP.NormalizeName(short)
-    end
-    return full
+    return SEPGP.NormalizeName(name)
 end
 
 function SEPGP.AwardRaidEP(amount, reason)

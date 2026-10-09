@@ -7,6 +7,8 @@ local officer = false
 C_GuildInfo = { IsGuildOfficer = function() return officer end }
 dofile("SEPGP-Forever/SettingsData.lua")
 local sends, updates = 0, 0
+local historyWindows = 0
+SEPGP.ToggleHistoryWindow = function() historyWindows = historyWindows + 1 end
 SEPGP.SendSettings = function() sends = sends + 1 end
 SEPGP.RequestSettings = function() updates = updates + 1 end
 SlashCmdList = { SEPGP = function(message) delegated[#delegated + 1] = message end }
@@ -21,6 +23,7 @@ assert(help:find("/sep show\n", 1, true) and help:find("/sep update\n", 1, true)
 assert(#delegated == 0 and not help:find("Unknown", 1, true))
 assert(help:find("/sep settings send (officer only)", 1, true))
 assert(help:find("/sep settings update\n", 1, true))
+assert(help:find("/sep show history (officer only)", 1, true))
 local helpLines = #messages
 SlashCmdList.SEPGP(" ")
 assert(#messages == helpLines * 2) -- Bare /sep shows the same help without duplicates.
@@ -35,7 +38,11 @@ SlashCmdList.SEPGP("settings send")
 assert(sends == 0)
 SlashCmdList.SEPGP("SETTINGS UPDATE")
 assert(updates == 1)
+SlashCmdList.SEPGP("show history")
+assert(historyWindows == 0)
 officer = true
+SlashCmdList.SEPGP(" ShOw   HiStOrY ")
+assert(historyWindows == 1)
 SlashCmdList.SEPGP("settings send")
 assert(sends == 1)
 for _, command in ipairs({ "sync", "history", "addep Alice 100", "addgp Alice 100", "decay 20", "raidep 100 Boss", "dfb" }) do

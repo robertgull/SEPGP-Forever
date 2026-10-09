@@ -4,15 +4,7 @@ local UI = SEPGP.UI
 UI.standingsFilter = "guild"
 
 local function PlayerKey(name)
-    local short, realm = name:match("^([^-]+)%-(.+)$")
-    local localRealm = GetNormalizedRealmName()
-    short, realm = short or name, realm or localRealm
-    local full = SEPGP.NormalizeName(short .. "-" .. realm)
-    if SEPGP.GetPlayer(full) then return full end
-    if realm:lower() == localRealm:lower() and SEPGP.GetPlayer(short) then
-        return SEPGP.NormalizeName(short)
-    end
-    return full
+    return SEPGP.NormalizeName(name)
 end
 
 local function Roster()
@@ -51,9 +43,11 @@ function SEPGP.GetStandings()
     local standings = {}
     for key, name in pairs(names) do
         local player = SEPGP.GetPlayer(key) or { EP = 0, GP = SEPGP.BASE_GP }
-        standings[#standings + 1] = { name = SEPGP.GetPlayer(key) and key or name,
-            key = key, class = classes[key], EP = player.EP, GP = player.GP,
-            PR = player.GP > 0 and player.EP / player.GP or 0 }
+        if not UI.standingsClasses or UI.standingsClasses[classes[key]] then
+            standings[#standings + 1] = { name = SEPGP.DisplayName(name),
+                key = key, class = classes[key], EP = player.EP, GP = player.GP,
+                PR = player.GP > 0 and player.EP / player.GP or 0 }
+        end
     end
     table.sort(standings, function(a, b)
         if a.PR == b.PR then return a.key < b.key end
@@ -95,6 +89,72 @@ local function Background(frame)
     texture:SetColorTexture(0.05, 0.05, 0.05, 0.95)
 end
 
+local function ClassName(class)
+    return (LOCALIZED_CLASS_NAMES_MALE and LOCALIZED_CLASS_NAMES_MALE[class])
+        or class:sub(1, 1) .. class:sub(2):lower()
+end
+
+local function UpdateClassFilter()
+    local names = {}
+    for class in pairs(UI.standingsClasses or {}) do names[#names + 1] = ClassName(class) end
+    table.sort(names)
+    UI.classFilter:SetText(#names == 0 and "All classes"
+        or (#names <= 2 and table.concat(names, ", ") or string.format("%d classes selected", #names)))
+    if UI.classMenu then
+        for _, button in ipairs(UI.classMenu.buttons) do
+            button:SetChecked(button.class and UI.standingsClasses and UI.standingsClasses[button.class]
+                or (not button.class and not UI.standingsClasses) or false)
+        end
+    end
+end
+
+local function ToggleClassMenu()
+    if UI.classMenu and UI.classMenu:IsShown() then UI.classMenu:Hide(); return end
+    if not UI.classMenu then
+        UI.classMenu = CreateFrame("Frame", nil, UI.standingsFrame)
+        UI.classMenu:SetPoint("TOPLEFT", 185, -72)
+        -- Standings rows also use DIALOG; the popup must receive clicks above them.
+        UI.classMenu:SetFrameStrata("FULLSCREEN_DIALOG")
+        UI.classMenu:EnableMouse(true)
+        Background(UI.classMenu)
+        UI.classMenu.buttons = {}
+    end
+    local _, _, rosterClasses = Roster()
+    local classes, seen = {}, {}
+    for _, class in pairs(rosterClasses) do
+        if not seen[class] then classes[#classes + 1], seen[class] = class, true end
+    end
+    table.sort(classes, function(a, b) return ClassName(a) < ClassName(b) end)
+    for _, button in ipairs(UI.classMenu.buttons) do button:Hide() end
+    for index = 1, #classes + 1 do
+        local class = classes[index - 1]
+        local button = UI.classMenu.buttons[index]
+        if not button then
+            button = CreateFrame("CheckButton", nil, UI.classMenu, "UICheckButtonTemplate")
+            button:SetPoint("TOPLEFT", 5, -5 - (index - 1) * 28)
+            button:SetSize(26, 26)
+            button:SetHitRectInsets(0, -144, 0, 0)
+            button.label = Text(button, "", 30, -7, 135)
+        end
+        UI.classMenu.buttons[index] = button
+        button.class = class or false
+        button.label:SetText(class and ClassName(class) or "All classes")
+        button:SetScript("OnClick", function()
+            if class then
+                UI.standingsClasses = UI.standingsClasses or {}
+                UI.standingsClasses[class] = not UI.standingsClasses[class] or nil
+                if not next(UI.standingsClasses) then UI.standingsClasses = nil end
+            else UI.standingsClasses = nil end
+            UI.scroll:SetVerticalScroll(0)
+            SEPGP.RefreshStandingsWindow()
+        end)
+        button:Show()
+    end
+    UI.classMenu:SetSize(180, (#classes + 1) * 28 + 10)
+    UpdateClassFilter()
+    UI.classMenu:Show()
+end
+
 function SEPGP.SubmitStandingsAward(kind)
     local dialog = UI.awardDialog
     if not dialog or not SEPGP.CanEditOfficerSettings() then return false end
@@ -104,8 +164,10 @@ function SEPGP.SubmitStandingsAward(kind)
         if not SEPGP.IsValidDecay(amount) then
             dialog.status:SetText("Enter a decay percentage from 0 to 100."); return false
         end
-    elseif type(amount) ~= "number" or amount <= 0 or amount >= math.huge or amount % 1 ~= 0 then
-        dialog.status:SetText("Enter a positive whole amount."); return false
+    elseif type(amount) ~= "number" or amount == 0 or math.abs(amount) >= math.huge
+        or amount % 1 ~= 0 or (dialog.mode ~= "member" and amount < 0) then
+        dialog.status:SetText(dialog.mode == "member" and "Enter a non-zero whole amount."
+            or "Enter a positive whole amount."); return false
     end
     local result
     if dialog.mode == "raid" then
@@ -156,7 +218,7 @@ function SEPGP.OpenStandingsAward(mode, player)
         or mode == "raid" and "Add raid EP" or "Apply decay")
     dialog.description:SetText(mode == "decay" and "Reduce EP and GP for all saved players, including those outside the displayed roster."
         or mode == "raid" and "Award EP to every member of the current raid."
-        or "Add EP or GP to this member.")
+        or "Add EP or GP to this member. Use a negative amount to subtract points.")
     dialog.amount:SetText("")
     dialog.reason:SetText("")
     dialog.status:SetText("")
@@ -211,6 +273,7 @@ function SEPGP.RefreshStandingsWindow()
     UI.content:SetHeight(math.max(380, #standings * 22))
     UI.count:SetText(string.format("%d players", #standings))
     UI.filter:SetText(UI.standingsFilter == "raid" and "Show whole guild" or "Show raid only")
+    UpdateClassFilter()
     for _, button in ipairs(UI.officerButtons) do
         if officer then button:Show() else button:Hide() end
     end
@@ -220,29 +283,38 @@ end
 
 function SEPGP.CreateStandingsWindow()
     if UI.standingsFrame then return end
-    local frame = CreateFrame("Frame", "SEPGPStandingsFrame", UIParent)
+    local frame = CreateFrame("Frame", "SEPGPStandingsFrame", UIParent, "BackdropTemplate")
     UI.standingsFrame = frame
     frame:SetSize(520, 590)
     frame:SetPoint("CENTER")
+    frame:SetFrameStrata("DIALOG")
     frame:SetClampedToScreen(true)
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
-    Background(frame)
-    Text(frame, "SEPGP Forever", 14, -12, 430, "GameFontNormalLarge")
-    Button(frame, "X", 478, -8, 28, function() frame:Hide() end)
+    frame:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border", tile = true,
+        tileSize = 32, edgeSize = 32, insets = { left = 8, right = 8, top = 8, bottom = 8 } })
+    Text(frame, "SEPGP Forever", 20, -18, 430, "GameFontNormalLarge")
+    local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
+    close:SetPoint("TOPRIGHT", -4, -4)
+    close:SetScript("OnClick", function() frame:Hide() end)
     UI.filter = Button(frame, "Show raid only", 15, -42, 155, function()
         UI.standingsFilter = UI.standingsFilter == "raid" and "guild" or "raid"
+        if UI.classMenu then UI.classMenu:Hide() end
+        UI.scroll:SetVerticalScroll(0)
         SEPGP.RefreshStandingsWindow()
     end)
+    UI.classFilter = Button(frame, "All classes", 185, -42, 180, ToggleClassMenu)
     for _, definition in ipairs({ { "#", 15, 30 }, { "Name", 50, 190 },
         { "EP", 240, 70 }, { "GP", 320, 70 }, { "PR", 400, 70 } }) do
         local header = Text(frame, definition[1], definition[2], -84, definition[3], "GameFontNormal")
         if definition[1] == "EP" or definition[1] == "GP" or definition[1] == "PR" then header:SetJustifyH("RIGHT") end
     end
     local scroll = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
+    UI.scroll = scroll
     scroll:SetPoint("TOPLEFT", 15, -108)
     scroll:SetPoint("BOTTOMRIGHT", -32, 88)
     UI.content = CreateFrame("Frame", nil, scroll)
@@ -266,7 +338,10 @@ function SEPGP.CreateStandingsWindow()
         if C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
         SEPGP.RefreshStandingsWindow()
     end)
-    frame:SetScript("OnHide", function() if UI.awardDialog then UI.awardDialog:Hide() end end)
+    frame:SetScript("OnHide", function()
+        if UI.awardDialog then UI.awardDialog:Hide() end
+        if UI.classMenu then UI.classMenu:Hide() end
+    end)
     frame:Hide()
 end
 

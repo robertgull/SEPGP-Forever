@@ -56,7 +56,7 @@ function SEPGP.NormalizeName(name)
         return nil
     end
 
-    return string.lower(name)
+    return string.lower((name:match("^[^-]+") or name):match("^%s*(.-)%s*$"))
 end
 
 function SEPGP.GetPlayer(name)
@@ -165,10 +165,10 @@ function SEPGP.ApplyAction(action)
         )
 
     elseif action.type == "GP" then
-        player.GP = math.max(
+        if action.amount ~= 0 then player.GP = math.max(
             SEPGP.BASE_GP,
             player.GP + action.amount
-        )
+        ) end
 
     else
         print("SEPGP: Unknown action type:", tostring(action.type))
@@ -261,7 +261,7 @@ function SEPGP.PrintHistory()
 
         print(
             string.format(
-                "[%s] %+d %s -> %s | %s/%s -> %s/%s | by %s",
+                "[%s] %+g %s -> %s | %s/%s -> %s/%s | by %s | Reason: %s",
                 action.id or "?",
                 action.amount or 0,
                 action.type or "?",
@@ -270,7 +270,8 @@ function SEPGP.PrintHistory()
                 tostring(beforeGP),
                 tostring(afterEP),
                 tostring(afterGP),
-                action.actor or "?"
+                action.actor or "?",
+                action.reason and action.reason ~= "" and action.reason or "No reason recorded"
             )
         )
     end
@@ -450,6 +451,8 @@ SlashCmdList["SEPGP"] = function(msg)
     end
 
     if string.lower(msg) == "cleardb" then -- TODO: REMOVE LATER, DANGEROUS
+        if SEPGP.CancelHistorySync then SEPGP.CancelHistorySync() end
+        SEPGP.sendQueue = {}
         SEPGP_DB = {
             revision = 0,
             localCounter = 0,
@@ -457,7 +460,7 @@ SlashCmdList["SEPGP"] = function(msg)
             actions = {},
         }
 
-        print("SEPGP database cleared.")
+        print("SEPGP database and sync checkpoint cleared.")
         return
     end
 

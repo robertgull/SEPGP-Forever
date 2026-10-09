@@ -1,5 +1,11 @@
 SEPGP = SEPGP or {}
 
+-- Realm-qualified names remain the stored identity and whisper address.
+function SEPGP.DisplayName(name)
+    if type(name) ~= "string" then return "?" end
+    return name:match("^[^-]+") or name
+end
+
 function SEPGP.CanEditOfficerSettings()
     return C_GuildInfo and C_GuildInfo.IsGuildOfficer
         and C_GuildInfo.IsGuildOfficer() and true or false

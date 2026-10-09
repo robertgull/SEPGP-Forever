@@ -1,10 +1,12 @@
 -- Options > AddOns > SEPGP Forever.
 local panel = CreateFrame("Frame")
+panel:Hide()
 panel.name = "Officer"
 panel.parent = "SEPGP Forever"
 SEPGP.settingsPanel = panel
 SEPGP.officerSettingsPanel = panel
 local memberPanel = CreateFrame("Frame")
+memberPanel:Hide()
 memberPanel.name, memberPanel.parent = "Member", "SEPGP Forever"
 SEPGP.memberSettingsPanel = memberPanel
 
@@ -114,6 +116,27 @@ memberPanel:SetScript("OnShow", function()
 end)
 
 local apply, reset, send
+local refreshing = false
+local function HasChanges()
+    local settings = SEPGP.GP.GetFormulaSettings()
+    for key, field in pairs(fields) do
+        if tonumber(field:GetText()) ~= settings[key] then return true end
+    end
+    for index, value in ipairs(SEPGP.Bids.GetSettings()) do
+        local row = bidFields[index]
+        if row.name:GetText() ~= value.label
+            or tonumber(row.discount:GetText()) ~= value.discount
+            or (row.active:GetChecked() and true or false) ~= value.active then
+            return true
+        end
+    end
+    return false
+end
+local function UpdateApply()
+    if not refreshing then
+        apply:SetEnabled(SEPGP.CanEditOfficerSettings() and HasChanges())
+    end
+end
 local function SetEditable(control, editable)
     if editable then
         control:Enable()
@@ -130,13 +153,14 @@ local function UpdatePermissions()
         SetEditable(row.discount, editable and index ~= 5)
         SetEditable(row.active, editable)
     end
-    SetEditable(apply, editable)
+    UpdateApply()
     SetEditable(reset, editable)
     SetEditable(send, editable)
     permissions:SetText(editable and "Guild officers can edit the formula and bid buttons."
         or "Formula and bid buttons are read-only. Only guild officers can edit them.")
 end
 local function Refresh()
+    refreshing = true
     local settings = SEPGP.GP.GetFormulaSettings()
     for key, field in pairs(fields) do
         field:SetText(tostring(settings[key]))
@@ -151,6 +175,7 @@ local function Refresh()
         row.discount:ClearFocus()
     end
     tooltipToggle:SetChecked(SEPGP.GetPersonalSettings().gpTooltip)
+    refreshing = false
     UpdatePermissions()
     status:SetText("")
 end
@@ -204,12 +229,27 @@ panel:SetScript("OnShow", Refresh)
 SEPGP.RefreshSettings = Refresh
 panel:RegisterEvent("GUILD_ROSTER_UPDATE")
 panel:RegisterEvent("PLAYER_GUILD_UPDATE")
-panel:SetScript("OnEvent", UpdatePermissions)
+panel:RegisterEvent("ADDON_LOADED")
+panel:RegisterEvent("PLAYER_LOGIN")
+panel:SetScript("OnEvent", function(_, event, addon)
+    if event == "PLAYER_LOGIN" or (event == "ADDON_LOADED" and addon == "SEPGP-Forever") then
+        Refresh()
+    elseif event ~= "ADDON_LOADED" then
+        UpdatePermissions()
+    end
+end)
 send = CreateFrame("Button", nil, content, "UIPanelButtonTemplate")
 send:SetSize(160, 26)
 send:SetPoint("TOPLEFT", 16, -574)
 send:SetText("Send settings")
 send:SetScript("OnClick", function() SEPGP.SendSettings() end)
+apply:Disable()
+for _, field in pairs(fields) do field:SetScript("OnTextChanged", UpdateApply) end
+for _, row in ipairs(bidFields) do
+    row.name:SetScript("OnTextChanged", UpdateApply)
+    row.discount:SetScript("OnTextChanged", UpdateApply)
+    row.active:SetScript("OnClick", UpdateApply)
+end
 
 -- Support both the modern Settings UI and the legacy Interface Options UI.
 local root = CreateFrame("Frame")

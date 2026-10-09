@@ -143,6 +143,7 @@ end
 
 local function BidderName(name, classes)
     local class = classes[NameKey(name)]
+    name = SEPGP.DisplayName(name)
     local color = class and ((CUSTOM_CLASS_COLORS and CUSTOM_CLASS_COLORS[class])
         or (RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]))
     if not color then return name end
@@ -187,13 +188,7 @@ end
 
 -- Existing databases also contain same-realm names without a realm suffix.
 local function StandingName(name)
-    local key = NameKey(name)
-    if SEPGP.GetPlayer(key) then return key end
-    local short, realm = key:match("^([^-]+)%-(.+)$")
-    if realm == string.lower(GetNormalizedRealmName()) and SEPGP.GetPlayer(short) then
-        return short
-    end
-    return key
+    return SEPGP.NormalizeName(name)
 end
 
 function DFB.GetRankedBids()
@@ -325,9 +320,8 @@ function DFB.CompleteAward(round, winner)
     if DFB.round ~= round then return end
     round.pendingAward = nil
     local amount = Cost(round, winner.choice)
-    local reason = "DFB: " .. round.link .. " (" .. round.choices[winner.choice].label .. ")"
-    -- AddGP clamps GP to BASE_GP; a free award must preserve decayed GP too.
-    if amount > 0 and not SEPGP.AddGP(winner.player, amount, reason) then return end
+    -- Log the item itself, including free awards, without charging extra GP.
+    if not SEPGP.AddGP(winner.player, amount, round.link) then return end
     if round.bagGUID then
         DFB.GetBagAwards()[round.bagGUID] = { winner = winner.name, link = round.link }
     end

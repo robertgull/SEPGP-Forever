@@ -84,6 +84,7 @@ end
 dofile("SEPGP-Forever/EPGP.lua")
 LibStub("AceSerializer-3.0"):Embed(SEPGP)
 dofile("SEPGP-Forever/UI.lua") -- Matches the active core overrides in the TOC.
+dofile("SEPGP-Forever/PlayerNames.lua")
 dofile("SEPGP-Forever/SettingsData.lua")
 dofile("SEPGP-Forever/Standings.lua")
 dofile("SEPGP-Forever/raidep.lua")
@@ -198,16 +199,21 @@ receive({ kind = "BID", id = id, choice = 2 }, "RAID", "Alice")
 assert(not DFB.round.responses["alice-realm"])
 receive({ kind = "BID", id = id, choice = 2 }, "WHISPER", "Alice")
 DFB.RecordResponse(id, "Bob", 3)
-assert(DFB.masterFrame.bids.text:find("|cff40bfffAlice-Realm|r", 1, true))
-assert(DFB.masterFrame.bids.text:find("|cffbf8040Bob-Realm|r", 1, true))
+assert(DFB.masterFrame.bids.text:find("|cff40bfffAlice|r", 1, true))
+assert(DFB.masterFrame.bids.text:find("|cffbf8040Bob|r", 1, true))
 assert(DFB.GetRankedBids()[1].name == "Alice-Realm") -- Category beats ratio.
 DFB.RecordResponse(id, "Bob", 2)
 assert(DFB.GetRankedBids()[1].name == "Bob-Realm") -- Ratio within category.
 DFB.RecordResponse(id, "Bob", 5)
-assert(DFB.masterFrame.bids.text:find("|cffbf8040Bob-Realm|r - Pass", 1, true))
+assert(DFB.masterFrame.bids.text:find("|cffbf8040Bob|r - Pass", 1, true))
 local beforeAwardAnnouncements = #announcements
 DFB.Award()
 assert(SEPGP_DB.players.alice.GP == 181) -- 80%, rounded to integer GP.
+local recordedLoot
+for _, action in pairs(SEPGP_DB.actions) do
+    if action.type == "GP" and action.amount == 81 and action.player == "alice" then recordedLoot = action end
+end
+assert(recordedLoot and recordedLoot.reason == link)
 assert(not DFB.round)
 assert(#announcements == beforeAwardAnnouncements + 1)
 assert(announcements[#announcements].channel == "RAID")
@@ -251,9 +257,16 @@ hooks.HandleModifiedItemClick(link, {
 })
 assert(DFB.round)
 SEPGP_DB.players.alice.GP = 50
+local freeRevision = SEPGP_DB.revision
 DFB.RecordResponse(DFB.round.id, "Alice", 4)
 DFB.Award()
 assert(SEPGP_DB.players.alice.GP == 50)
+assert(SEPGP_DB.revision == freeRevision + 1)
+local freeLoot
+for _, action in pairs(SEPGP_DB.actions) do
+    if action.type == "GP" and action.amount == 0 and action.before.GP == 50 then freeLoot = action end
+end
+assert(freeLoot and freeLoot.reason == link and freeLoot.after.GP == 50)
 -- Modified loot clicks come through the shared click handler without an
 -- ItemLocation. Use the actual loot slot, not the visible row number.
 LootFrame = { GetParent = function() return UIParent end }

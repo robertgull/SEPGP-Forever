@@ -18,11 +18,15 @@ BidSettings.lua
 Settings.lua
 comms.lua
 UI.lua
+PlayerNames.lua
 Standings.lua
 raidep.lua
 tooltip.lua
 ItemEligibility.lua
 dfb.lua
 LootCollect.lua
+LootQueue.lua
 SettingsSync.lua
+HistorySync.lua
+HistoryWindow.lua
 Commands.lua

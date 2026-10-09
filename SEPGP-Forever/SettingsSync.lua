@@ -32,6 +32,9 @@ local function OfficerSender(sender)
     local ok, flags = pcall(C_GuildInfo.GuildControlGetRankFlags, rank + 1)
     return ok and type(flags) == "table" and flags[12] == true
 end
+-- Shared roster identity/permission checks for officer history synchronization.
+SEPGP.GuildNameKey = NameKey
+SEPGP.IsGuildOfficerName = OfficerSender
 
 local function Send(payload, channel, target)
     local encoded = SEPGP.EncodePayload(payload)
@@ -116,7 +119,7 @@ function SEPGP:OnSettingsCommReceived(prefix, message, channel, sender)
     SEPGP_DB.settings.bids = SEPGP.Bids.Copy(payload.bids)
     pending = nil -- First valid officer response wins this request.
     if SEPGP.RefreshSettings then SEPGP.RefreshSettings() end
-    print("SEPGP: Settings updated from " .. sender .. ".")
+    print("SEPGP: Settings updated from " .. SEPGP.DisplayName(sender) .. ".")
 end
 
 local events = CreateFrame("Frame")

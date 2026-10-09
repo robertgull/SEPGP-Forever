@@ -12,12 +12,17 @@ local function frame(kind)
     for _, method in ipairs({ "SetPoint", "SetWidth", "SetJustifyH", "SetSize", "SetAutoFocus", "ClearFocus", "SetScrollChild", "SetMaxLetters", "RegisterEvent" }) do
         object[method] = function() end
     end
-    function object:SetText(value) self.text = value end
+    function object:SetText(value)
+        self.text = value
+        if self.scripts.OnTextChanged then self.scripts.OnTextChanged(self) end
+    end
     function object:GetText() return self.text end
     function object:SetChecked(value) self.checked = value end
     function object:GetChecked() return self.checked end
     function object:Enable() self.enabled = true end
     function object:Disable() self.enabled = false end
+    function object:SetEnabled(value) self.enabled = value and true or false end
+    function object:Hide() self.hidden = true end
     function object:SetScript(event, callback) self.scripts[event] = callback end
     function object:CreateFontString() return frame("FontString") end
     frames[#frames + 1] = object
@@ -49,7 +54,14 @@ assert(registered == category and #legacy == 0)
 assert(subcategories.Officer == SEPGP.settingsPanel)
 assert(subcategories.Member == SEPGP.memberSettingsPanel)
 local panel = SEPGP.settingsPanel
-panel.scripts.OnShow()
+assert(panel.hidden and SEPGP.memberSettingsPanel.hidden)
+panel.scripts.OnEvent(panel, "ADDON_LOADED", "SEPGP-Forever")
+-- Saved values loaded by login must appear even before the first OnShow.
+assert(SEPGP.GP.SetFormulaSettings(12, 3, 0.5))
+local loginBids = SEPGP.Bids.Copy(SEPGP.Bids.GetSettings())
+loginBids[1].label, loginBids[1].discount, loginBids[1].active = "Saved Bid", 15, false
+assert(SEPGP.Bids.SetSettings(loginBids))
+panel.scripts.OnEvent(panel, "PLAYER_LOGIN")
 SEPGP.memberSettingsPanel.scripts.OnShow()
 local fields, buttons, checks = {}, {}, {}
 for _, object in ipairs(frames) do
@@ -57,12 +69,38 @@ for _, object in ipairs(frames) do
     if object.kind == "Button" then buttons[object.text] = object end
     if object.kind == "CheckButton" then checks[#checks + 1] = object end
 end
+assert(fields[1].text == "12" and fields[2].text == "3" and fields[3].text == "0.5")
+assert(fields[4].text == "Saved Bid" and fields[5].text == "15" and not checks[1].checked)
+assert(not buttons.Apply.enabled)
+assert(SEPGP.GP.ResetFormulaSettings())
+assert(SEPGP.Bids.ResetSettings())
+panel.scripts.OnShow()
 assert(fields[1].text == "8" and fields[2].text == "2" and fields[3].text == "1")
+assert(not buttons.Apply.enabled)
+fields[1]:SetText("9")
+assert(buttons.Apply.enabled)
+fields[1]:SetText("8.0")
+assert(not buttons.Apply.enabled)
+fields[4]:SetText("Changed")
+assert(buttons.Apply.enabled)
+fields[4]:SetText("BiS")
+assert(not buttons.Apply.enabled)
+fields[5]:SetText("5")
+assert(buttons.Apply.enabled)
+fields[5]:SetText("0")
+assert(not buttons.Apply.enabled)
+checks[1]:SetChecked(false)
+checks[1].scripts.OnClick(checks[1])
+assert(buttons.Apply.enabled)
+checks[1]:SetChecked(true)
+checks[1].scripts.OnClick(checks[1])
+assert(not buttons.Apply.enabled)
 fields[1]:SetText("10")
 fields[2]:SetText("3")
 fields[3]:SetText("0.5")
 buttons.Apply.scripts.OnClick()
 assert(SEPGP.GP.Calculate(26, 4, 1) == 15)
+assert(not buttons.Apply.enabled)
 assert(fields[4].text == "BiS" and fields[5].text == "0" and checks[1].checked)
 fields[4]:SetText("Main Spec")
 fields[5]:SetText("25")
@@ -75,7 +113,9 @@ fields[5]:SetText("101")
 fields[1]:SetText("99")
 buttons.Apply.scripts.OnClick()
 assert(SEPGP.GP.Calculate(26, 4, 1) == 15) -- Neither section is saved on invalid input.
+assert(buttons.Apply.enabled)
 panel.scripts.OnShow()
+assert(not buttons.Apply.enabled)
 fields[6]:SetText("MainSpec")
 buttons.Apply.scripts.OnClick()
 assert(SEPGP.Bids.GetSettings()[2].label == "Alternative")
@@ -89,6 +129,7 @@ assert(fields[1].text == "10" and fields[2].text == "3")
 buttons["Restore defaults"].scripts.OnClick()
 assert(fields[1].text == "8" and SEPGP.GP.Calculate(26, 4, 1) == 16)
 assert(fields[4].text == "BiS" and checks[2].checked)
+assert(not buttons.Apply.enabled)
 local saved = SEPGP.Bids.Copy(SEPGP.Bids.GetSettings())
 saved[3].label, saved[3].discount = "Small Upgrade", 70
 assert(SEPGP.Bids.SetSettings(saved))
@@ -126,7 +167,9 @@ assert(not SEPGP.GetPersonalSettings().gpTooltip) -- Preference survives reload.
 -- Promotion/demotion changes access without reopening the page.
 officer = true
 panel.scripts.OnEvent()
-assert(fields[1].enabled and checks[1].enabled and buttons.Apply.enabled)
+assert(fields[1].enabled and checks[1].enabled and not buttons.Apply.enabled)
+fields[1]:SetText("9")
+assert(buttons.Apply.enabled)
 assert(not fields[13].enabled) -- Pass discount is always locked.
 officer = false
 panel.scripts.OnEvent()

@@ -2,6 +2,7 @@
 local commands = {
     { name = "help", usage = "/sep help" },
     { name = "show", usage = "/sep show" },
+    { name = "show history", usage = "/sep show history", officer = true },
     { name = "standings", usage = "/sep standings" },
     { name = "update", usage = "/sep update" },
     { name = "get", usage = "/sep get <player>" },
@@ -35,6 +36,12 @@ SlashCmdList.SEPGP = function(message)
     message = (message or ""):match("^%s*(.-)%s*$")
     local command = (message:match("^(%S+)") or ""):lower()
     if command == "" or command == "help" then SEPGP.PrintCommandHelp(); return end
+    if command == "show" and message:lower():match("^show%s+history%s*$") then
+        if not SEPGP.CanEditOfficerSettings() then
+            print("SEPGP: /sep show history is officer only.")
+        else SEPGP.ToggleHistoryWindow() end
+        return
+    end
     if command == "settings" then
         local action = (message:match("^%S+%s+(%S+)") or ""):lower()
         if action == "send" and not SEPGP.CanEditOfficerSettings() then
